@@ -1,0 +1,197 @@
+{
+  "sites": [
+    {
+      "name": "tascaparts",
+      "base_url": "https://www.tascaparts.com",
+      "brands": ["GM", "Chevrolet", "Buick", "GMC", "Cadillac"],
+      "search_strategy": "category",
+      "category_url": "/c/wheelstiresparts",
+      "use_selenium": true
+    },
+    {
+      "name": "acuraparts",
+      "base_url": "https://www.acurapartswarehouse.com",
+      "brands": ["Acura"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true
+    },
+    {
+      "name": "moparonline",
+      "base_url": "https://parts.moparonlineparts.com",
+      "brands": ["Alfa Romeo", "Fiat", "Dodge", "Jeep", "Ram"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true
+    },
+    {
+      "name": "scuderiacarparts",
+      "base_url": "https://www.scuderiacarparts.com",
+      "brands": ["Aston Martin", "Bentley", "Ferrari", "Maserati", "Rolls Royce", "McLaren", "Lamborghini"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true
+    },
+    {
+      "name": "audiusa",
+      "base_url": "https://parts.audiusa.com",
+      "brands": ["Audi"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true
+    },
+    {
+      "name": "bmw",
+      "base_url": "https://parts.bmwofsouthatlanta.com",
+      "brands": ["BMW"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true
+    },
+    {
+      "name": "gm_oemparts",
+      "base_url": "https://g.oempartsonline.com",
+      "brands": ["Chevrolet", "Buick", "GMC", "Cadillac"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true
+    },
+    {
+      "name": "ford",
+      "base_url": "https://parts.lakelandford.com",
+      "brands": ["Ford", "Lincoln", "Mercury"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true
+    },
+    {
+      "name": "honda",
+      "base_url": "https://www.hondapartsonline.net",
+      "brands": ["Honda"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true
+    },
+    {
+      "name": "hyundai",
+      "base_url": "https://hyundai.oempartsonline.com",
+      "brands": ["Hyundai", "Genesis"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true
+    },
+    {
+      "name": "infiniti",
+      "base_url": "https://www.infinitipartsdeal.com",
+      "brands": ["Infiniti"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true
+    },
+    {
+      "name": "jaguar",
+      "base_url": "https://parts.jaguarpalmbeach.com",
+      "brands": ["Jaguar"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true
+    },
+    {
+      "name": "kia",
+      "base_url": "https://www.kiapartsnow.com",
+      "brands": ["Kia"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true
+    },
+    {
+      "name": "landrover",
+      "base_url": "https://parts.landroverparamus.com",
+      "brands": ["Land Rover"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true
+    },
+    {
+      "name": "lexus",
+      "base_url": "https://lexus.oempartsonline.com",
+      "brands": ["Lexus"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true
+    },
+    {
+      "name": "mazda",
+      "base_url": "https://www.jimellismazdaparts.com",
+      "brands": ["Mazda"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true
+    },
+    {
+      "name": "mercedes",
+      "base_url": "https://www.mbpartsource.com",
+      "brands": ["Mercedes-Benz"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true
+    },
+    {
+      "name": "mitsubishi",
+      "base_url": "https://www.mitsubishipartswarehouse.com",
+      "brands": ["Mitsubishi"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true
+    },
+    {
+      "name": "nissan",
+      "base_url": "https://parts.nissanusa.com",
+      "brands": ["Nissan"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true
+    },
+    {
+      "name": "porsche",
+      "base_url": "https://parts.byersporsche.com",
+      "brands": ["Porsche"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true
+    },
+    {
+      "name": "subaru",
+      "base_url": "https://parts.subaru.com",
+      "brands": ["Subaru"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true
+    },
+    {
+      "name": "toyota",
+      "base_url": "https://autoparts.toyota.com",
+      "brands": ["Toyota"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true
+    },
+    {
+      "name": "volkswagen",
+      "base_url": "https://parts.vw.com",
+      "brands": ["Volkswagen"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true
+    },
+    {
+      "name": "volvo",
+      "base_url": "https://usparts.volvocars.com",
+      "brands": ["Volvo"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true
+    }
+  ]
+}
+
