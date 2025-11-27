@@ -22,48 +22,77 @@ class AcuraPartsWarehouseScraper(BaseScraper):
     def get_product_urls(self):
         """
         Get all wheel product URLs from acurapartswarehouse.com
-        Use search functionality as PRIMARY method (not fallback)
+        Strategy: Browse category pages and search, filtering for wheel products early
         """
         product_urls = []
         
         try:
-            # PRIMARY METHOD: Use search
-            self.logger.info("Using search as PRIMARY method to find wheel products...")
-            search_urls = self._search_for_wheels()
-            product_urls.extend(search_urls)
-            product_urls = list(set(product_urls))  # Remove duplicates
+            # PRIMARY METHOD: Browse category pages (wheels are typically in chassis category)
+            self.logger.info("Browsing category pages to find wheel products...")
             
-            self.logger.info(f"Found {len(product_urls)} wheel products via search")
+            # Categories that might contain wheels
+            categories = [
+                'acura-chassis',  # Most likely to have wheels
+                'acura-body_air_conditioning',  # May have wheel covers
+                'acura-interior_bumper',  # May have wheel-related accessories
+            ]
             
-            # FALLBACK: If search didn't work, try category page
-            if len(product_urls) < 10:
-                self.logger.warning("Search returned few results, trying category page as fallback...")
-                category_url = f"{self.base_url}/category/acura-chassis.html"
-                self.logger.info(f"Fetching category page: {category_url}")
-                
-                html = self.get_page(category_url, use_selenium=True, wait_time=1)
-                if html:
-                    soup = BeautifulSoup(html, 'lxml')
-                    # Acura uses /oem-acura- pattern
-                    product_links = soup.find_all('a', href=re.compile(r'/oem-acura-'))
-                    
-                    for link in product_links:
-                        href = link.get('href', '')
-                        if href and href not in product_urls:
-                            full_url = href if href.startswith('http') else f"{self.base_url}{href}"
-                            link_text = link.get_text(strip=True).lower()
-                            if 'wheel' in link_text or 'rim' in link_text:
-                                product_urls.append(full_url)
+            for category in categories:
+                category_urls = self._browse_category(category)
+                product_urls.extend(category_urls)
+                self.logger.info(f"Category {category}: Found {len(category_urls)} wheel product URLs")
+            
+            # Remove duplicates
+            product_urls = list(set(product_urls))
+            self.logger.info(f"Total unique wheel product URLs from categories: {len(product_urls)}")
+            
+            # SECONDARY METHOD: Try search if category browsing didn't find enough
+            if len(product_urls) < 50:
+                self.logger.info("Trying search as secondary method...")
+                search_urls = self._search_for_wheels()
+                for url in search_urls:
+                    if url not in product_urls:
+                        product_urls.append(url)
+                self.logger.info(f"After search: Total {len(product_urls)} wheel product URLs")
             
         except Exception as e:
             self.logger.error(f"Error getting product URLs: {str(e)}")
+            import traceback
+            self.logger.debug(f"Traceback: {traceback.format_exc()}")
         
         return product_urls
     
-    def _search_for_wheels(self):
+    def _is_wheel_url(self, url, link_text=''):
         """
-        Search for wheels using site search - handles pagination and dynamic content
-        Extracts ALL product URLs from search results (not just those with 'wheel' in URL)
+        Check if URL or link text contains wheel-related keywords
+        Returns True if it's likely a wheel product
+        """
+        url_lower = url.lower()
+        text_lower = link_text.lower() if link_text else ''
+        combined = f"{url_lower} {text_lower}"
+        
+        # Wheel-related keywords to match
+        wheel_keywords = [
+            'wheel', 'rim', 'hubcap', 'hub-cap', 'wheel-cap', 'center-cap',
+            'wheel-cover', 'alloy-wheel', 'steel-wheel', 'aluminum-wheel',
+            'chrome-wheel', 'wheel-assembly', 'wheel-set', 'wheel-disc',
+            'disc-wheel', 'front-wheel', 'rear-wheel', 'wheel-rim'
+        ]
+        
+        # Check if any wheel keyword is in URL or text
+        for keyword in wheel_keywords:
+            if keyword in combined:
+                # Exclude non-wheel products
+                exclude_keywords = ['steering-wheel', 'steering_wheel', 'steeringwheel']
+                if not any(exclude in combined for exclude in exclude_keywords):
+                    return True
+        
+        return False
+    
+    def _browse_category(self, category_name):
+        """
+        Browse a category page and extract only wheel product URLs with pagination
+        Filters for wheel products early based on URL and link text
         """
         product_urls = []
         
@@ -71,38 +100,32 @@ class AcuraPartsWarehouseScraper(BaseScraper):
             if not self.driver:
                 self.ensure_driver()
             
-            search_url = f"{self.base_url}/search?search_str=wheel"
-            self.logger.info(f"Searching: {search_url}")
+            category_url = f"{self.base_url}/category/{category_name}.html"
+            self.logger.info(f"Browsing category: {category_url}")
             
-            # Increase page load timeout for search page
+            # Increase page load timeout for category pages
             original_timeout = self.page_load_timeout
             try:
-                self.page_load_timeout = 60  # Increase to 60 seconds for search page
+                self.page_load_timeout = 60
                 self.driver.set_page_load_timeout(60)
                 
-                # Use get_page() instead of direct driver.get() for better error handling
-                html = self.get_page(search_url, use_selenium=True, wait_time=2)
+                # Load first page
+                html = self.get_page(category_url, use_selenium=True, wait_time=2)
                 if not html:
-                    self.logger.error("Failed to fetch search page")
+                    self.logger.error(f"Failed to fetch category page: {category_url}")
                     return product_urls
                 
             except Exception as e:
-                self.logger.error(f"Error loading search page: {str(e)}")
+                self.logger.error(f"Error loading category page: {str(e)}")
                 return product_urls
             finally:
-                # Restore original timeout
                 try:
                     self.page_load_timeout = original_timeout
                     self.driver.set_page_load_timeout(original_timeout)
                 except:
                     pass
             
-            # Wait for search results to load
-            from selenium.webdriver.support.ui import WebDriverWait
-            from selenium.webdriver.support import expected_conditions as EC
-            from selenium.webdriver.common.by import By
-            
-            # Wait for product links to appear (Acura uses /oem-acura- pattern)
+            # Wait for product links to appear
             try:
                 WebDriverWait(self.driver, 10).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/oem-acura-']"))
@@ -110,21 +133,19 @@ class AcuraPartsWarehouseScraper(BaseScraper):
             except:
                 self.logger.warning("Product links not found immediately, continuing anyway...")
             
-            # Scroll to load more products (if lazy loading) - with timeout protection
+            # Scroll to load all products on current page (if lazy loading)
             self.logger.info("Scrolling to load all products on current page...")
             try:
                 last_height = self.driver.execute_script("return document.body.scrollHeight")
                 scroll_attempts = 0
-                max_scrolls = 50  # Increased limit for pages with many products
+                max_scrolls = 50
                 no_change_count = 0
                 
                 while scroll_attempts < max_scrolls:
                     try:
-                        # Scroll down
                         self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                        time.sleep(1.5)  # Wait for content to load
+                        time.sleep(1.5)
                         
-                        # Check if new content loaded (with timeout protection)
                         try:
                             new_height = self.driver.execute_script("return document.body.scrollHeight")
                         except Exception as scroll_error:
@@ -133,25 +154,24 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                         
                         if new_height == last_height:
                             no_change_count += 1
-                            if no_change_count >= 3:  # No change for 3 consecutive scrolls
-                                break  # No more content to load
+                            if no_change_count >= 3:
+                                break
                         else:
-                            no_change_count = 0  # Reset counter if content changed
+                            no_change_count = 0
                         last_height = new_height
                         scroll_attempts += 1
                     except Exception as scroll_error:
                         self.logger.warning(f"Error during scrolling: {str(scroll_error)}")
                         break
-            except Exception as scroll_error:
-                self.logger.warning(f"Error initializing scroll: {str(scroll_error)}")
+            except Exception as scroll_init_error:
+                self.logger.warning(f"Error initializing scroll: {str(scroll_init_error)}")
             
-            # Get page source after scrolling - with timeout protection
+            # Get page source after scrolling
             try:
                 html = self.driver.page_source
             except Exception as page_source_error:
                 self.logger.error(f"Error accessing page_source: {str(page_source_error)}")
-                # Try to get HTML via get_page() as fallback
-                html = self.get_page(search_url, use_selenium=True, wait_time=1)
+                html = self.get_page(category_url, use_selenium=True, wait_time=1)
                 if not html:
                     self.logger.error("Could not retrieve page source")
                     return product_urls
@@ -159,52 +179,51 @@ class AcuraPartsWarehouseScraper(BaseScraper):
             soup = BeautifulSoup(html, 'lxml')
             
             # Find ALL product links (Acura uses /oem-acura- pattern)
-            # The is_wheel_product() method will filter later
             product_links = soup.find_all('a', href=re.compile(r'/oem-acura-'))
             
             for link in product_links:
                 href = link.get('href', '')
                 if href:
-                    # Normalize URL: extract base product URL (remove query params that change per page)
+                    # Normalize URL
                     full_url = href if href.startswith('http') else f"{self.base_url}{href}"
                     
                     # Remove fragment (#)
                     if '#' in full_url:
                         full_url = full_url.split('#')[0]
                     
-                    # IMPORTANT: Extract only the base product URL, remove page-specific query params
-                    # This ensures we get unique products across pages
+                    # Extract only the base product URL, remove query params
                     if '/oem-acura-' in full_url:
-                        # Extract just the product path, remove all query params
                         if '?' in full_url:
                             full_url = full_url.split('?')[0]
                     
                     # Normalize trailing slashes
                     full_url = full_url.rstrip('/')
                     
-                    if full_url not in product_urls:
-                        product_urls.append(full_url)
+                    # Filter for wheel products only
+                    link_text = link.get_text(strip=True)
+                    if self._is_wheel_url(full_url, link_text):
+                        if full_url not in product_urls:
+                            product_urls.append(full_url)
             
             self.logger.info(f"Found {len(product_links)} product links on page 1, {len(product_urls)} unique URLs")
             
             # Handle pagination - iterate through all pages
-            # Strategy: Use direct URL construction since we know the search URL pattern
             page_num = 2
-            max_pages = 2000  # Safety limit
+            max_pages = 500  # Safety limit
             consecutive_empty_pages = 0
             max_consecutive_empty = 4  # Stop after 4 consecutive pages with no new products
             
             while page_num <= max_pages:
                 try:
-                    self.logger.info(f"Loading page {page_num}...")
+                    self.logger.info(f"Loading category page {page_num}...")
                     
                     # Try multiple pagination URL patterns
                     pagination_urls = [
-                        f"{self.base_url}/search?search_str=wheel&page={page_num}",
-                        f"{self.base_url}/search?search_str=wheel&p={page_num}",
-                        f"{self.base_url}/search?search_str=wheel&pageNumber={page_num}",
-                        f"{self.base_url}/search?q=wheel&page={page_num}",
-                        f"{self.base_url}/search/wheel?page={page_num}",
+                        f"{self.base_url}/category/{category_name}.html?page={page_num}",
+                        f"{self.base_url}/category/{category_name}.html?p={page_num}",
+                        f"{self.base_url}/category/{category_name}.html?pageNumber={page_num}",
+                        f"{self.base_url}/category/{category_name}/page/{page_num}",
+                        f"{self.base_url}/category/{category_name}/p/{page_num}",
                     ]
                     
                     page_loaded = False
@@ -214,17 +233,14 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                         try:
                             self.logger.debug(f"Trying pagination URL: {pag_url}")
                             
-                            # Increase timeout for pagination pages
                             original_pag_timeout = self.page_load_timeout
                             try:
                                 self.page_load_timeout = 60
                                 self.driver.set_page_load_timeout(60)
                                 
-                                # Load the page directly
                                 self.driver.get(pag_url)
-                                time.sleep(2)  # Wait for page to load
+                                time.sleep(2)
                                 
-                                # Wait for product links to appear (Acura pattern)
                                 try:
                                     WebDriverWait(self.driver, 10).until(
                                         EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/oem-acura-']"))
@@ -232,10 +248,8 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                                 except:
                                     self.logger.debug(f"Product links not found immediately on {pag_url}, continuing...")
                                 
-                                # Check if page loaded successfully (has product links)
                                 page_links_check = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='/oem-acura-']")
                                 if len(page_links_check) > 0:
-                                    # Page loaded successfully
                                     page_loaded = True
                                     pag_url_used = pag_url
                                     self.logger.info(f"✓ Successfully loaded page {page_num} using URL: {pag_url}")
@@ -246,7 +260,6 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                                     self.logger.debug(f"Timeout loading {pag_url}, trying next pattern...")
                                 continue
                             finally:
-                                # Restore timeout
                                 try:
                                     self.page_load_timeout = original_pag_timeout
                                     self.driver.set_page_load_timeout(original_pag_timeout)
@@ -264,16 +277,13 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                         page_num += 1
                         continue
                     
-                    # Don't reset consecutive_empty_pages here - only reset when we find new products
-                    # This ensures we properly track consecutive pages with no new products
-                    
                     # Scroll to load all products on this page
                     try:
                         last_height = self.driver.execute_script("return document.body.scrollHeight")
                         scroll_attempts = 0
                         no_change_count = 0
                         
-                        while scroll_attempts < 30:  # Limit per page
+                        while scroll_attempts < 30:
                             try:
                                 self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
                                 time.sleep(1)
@@ -293,12 +303,11 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                     except Exception as scroll_init_error:
                         self.logger.warning(f"Error initializing pagination scroll: {str(scroll_init_error)}")
                     
-                    # Extract product links from this page - with timeout protection
+                    # Extract product links from this page
                     try:
                         html = self.driver.page_source
                     except Exception as page_source_error:
                         self.logger.warning(f"Error accessing page_source on page {page_num}: {str(page_source_error)}")
-                        # Try to get HTML via get_page() as fallback
                         html = self.get_page(pag_url_used, use_selenium=True, wait_time=1)
                         if not html:
                             self.logger.warning(f"Could not retrieve page source for page {page_num}, skipping")
@@ -312,30 +321,26 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                     for link in page_links:
                         href = link.get('href', '')
                         if href:
-                            # Normalize URL: extract base product URL (remove query params that change per page)
                             full_url = href if href.startswith('http') else f"{self.base_url}{href}"
                             
-                            # Remove fragment (#)
                             if '#' in full_url:
                                 full_url = full_url.split('#')[0]
                             
-                            # IMPORTANT: Extract only the base product URL, remove page-specific query params
-                            # This ensures we get unique products across pages
                             if '/oem-acura-' in full_url:
-                                # Extract just the product path, remove all query params
                                 if '?' in full_url:
                                     full_url = full_url.split('?')[0]
                             
-                            # Normalize trailing slashes
                             full_url = full_url.rstrip('/')
                             
-                            if full_url not in product_urls:
-                                product_urls.append(full_url)
-                                page_urls_count += 1
+                            # Filter for wheel products only
+                            link_text = link.get_text(strip=True)
+                            if self._is_wheel_url(full_url, link_text):
+                                if full_url not in product_urls:
+                                    product_urls.append(full_url)
+                                    page_urls_count += 1
                     
                     self.logger.info(f"Page {page_num}: Found {len(page_links)} product links, {page_urls_count} new unique URLs (Total: {len(product_urls)})")
                     
-                    # If no new products found, increment empty counter
                     if page_urls_count == 0:
                         consecutive_empty_pages += 1
                         self.logger.warning(f"No new products on page {page_num} (consecutive empty: {consecutive_empty_pages})")
@@ -343,11 +348,9 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                             self.logger.info(f"Stopping pagination: {consecutive_empty_pages} consecutive pages with no new products")
                             break
                     else:
-                        consecutive_empty_pages = 0  # Reset counter if we found new products
+                        consecutive_empty_pages = 0
                     
                     page_num += 1
-                    
-                    # Add delay between pages to avoid being blocked
                     time.sleep(random.uniform(2, 4))
                     
                 except Exception as e:
@@ -359,7 +362,147 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                     page_num += 1
                     continue
             
-            self.logger.info(f"Pagination complete. Total unique product URLs found: {len(product_urls)}")
+            self.logger.info(f"Category browsing complete. Total unique product URLs found: {len(product_urls)}")
+            
+        except Exception as e:
+            self.logger.error(f"Error browsing category: {str(e)}")
+            import traceback
+            self.logger.debug(f"Traceback: {traceback.format_exc()}")
+        
+        return product_urls
+    
+    def _search_for_wheels(self):
+        """
+        Search for wheels using site search - handles pagination and dynamic content
+        Filters for wheel products early based on URL and link text
+        """
+        product_urls = []
+        
+        try:
+            if not self.driver:
+                self.ensure_driver()
+            
+            # Try multiple search URL patterns
+            search_urls = [
+                f"{self.base_url}/search?search_str=wheel",
+                f"{self.base_url}/search?q=wheel",
+                f"{self.base_url}/search/wheel",
+            ]
+            
+            for search_url in search_urls:
+                self.logger.info(f"Trying search: {search_url}")
+                
+                # Increase page load timeout for search page
+                original_timeout = self.page_load_timeout
+                try:
+                    self.page_load_timeout = 60
+                    self.driver.set_page_load_timeout(60)
+                    
+                    # Use get_page() instead of direct driver.get() for better error handling
+                    html = self.get_page(search_url, use_selenium=True, wait_time=2)
+                    if not html:
+                        self.logger.warning(f"Failed to fetch search page: {search_url}")
+                        continue  # Try next search URL pattern
+                    
+                except Exception as e:
+                    self.logger.warning(f"Error loading search page {search_url}: {str(e)}")
+                    continue  # Try next search URL pattern
+                finally:
+                    # Restore original timeout
+                    try:
+                        self.page_load_timeout = original_timeout
+                        self.driver.set_page_load_timeout(original_timeout)
+                    except:
+                        pass
+            
+                # Wait for search results to load
+                try:
+                    WebDriverWait(self.driver, 10).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/oem-acura-']"))
+                    )
+                except:
+                    self.logger.warning("Product links not found immediately, continuing anyway...")
+                
+                # Scroll to load more products (if lazy loading)
+                self.logger.info("Scrolling to load all products on current page...")
+                try:
+                    last_height = self.driver.execute_script("return document.body.scrollHeight")
+                    scroll_attempts = 0
+                    max_scrolls = 50
+                    no_change_count = 0
+                    
+                    while scroll_attempts < max_scrolls:
+                        try:
+                            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                            time.sleep(1.5)
+                            
+                            try:
+                                new_height = self.driver.execute_script("return document.body.scrollHeight")
+                            except Exception as scroll_error:
+                                self.logger.warning(f"Error checking scroll height: {str(scroll_error)}")
+                                break
+                            
+                            if new_height == last_height:
+                                no_change_count += 1
+                                if no_change_count >= 3:
+                                    break
+                            else:
+                                no_change_count = 0
+                            last_height = new_height
+                            scroll_attempts += 1
+                        except Exception as scroll_error:
+                            self.logger.warning(f"Error during scrolling: {str(scroll_error)}")
+                            break
+                except Exception as scroll_error:
+                    self.logger.warning(f"Error initializing scroll: {str(scroll_error)}")
+                
+                # Get page source after scrolling
+                try:
+                    html = self.driver.page_source
+                except Exception as page_source_error:
+                    self.logger.error(f"Error accessing page_source: {str(page_source_error)}")
+                    html = self.get_page(search_url, use_selenium=True, wait_time=1)
+                    if not html:
+                        self.logger.warning("Could not retrieve page source, trying next search pattern...")
+                        continue
+                
+                soup = BeautifulSoup(html, 'lxml')
+                
+                # Find ALL product links (Acura uses /oem-acura- pattern)
+                product_links = soup.find_all('a', href=re.compile(r'/oem-acura-'))
+                
+                if len(product_links) > 0:
+                    # Found products with this search pattern, extract only wheel products
+                    wheel_count = 0
+                    for link in product_links:
+                        href = link.get('href', '')
+                        if href:
+                            full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                            
+                            if '#' in full_url:
+                                full_url = full_url.split('#')[0]
+                            
+                            if '/oem-acura-' in full_url:
+                                if '?' in full_url:
+                                    full_url = full_url.split('?')[0]
+                            
+                            full_url = full_url.rstrip('/')
+                            
+                            # Filter for wheel products only
+                            link_text = link.get_text(strip=True)
+                            if self._is_wheel_url(full_url, link_text):
+                                if full_url not in product_urls:
+                                    product_urls.append(full_url)
+                                    wheel_count += 1
+                    
+                    self.logger.info(f"Found {len(product_links)} product links, {wheel_count} wheel products with search pattern: {search_url}")
+                    # Found working search pattern, exit loop
+                    break
+                else:
+                    self.logger.warning(f"No products found with search pattern: {search_url}")
+                    continue  # Try next search pattern
+            
+            self.logger.info(f"Search complete. Total unique product URLs found: {len(product_urls)}")
             
         except Exception as e:
             self.logger.error(f"Error searching for wheels: {str(e)}")
