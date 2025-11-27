@@ -1362,15 +1362,185 @@ class AcuraPartsWarehouseScraper(BaseScraper):
             
             # Extract SKU with error handling
             try:
+                sku_elem = None
+                product_data['sku'] = ''
+                
+                # Method 1: Try standard selectors first
                 sku_elem = soup.find('span', class_='sku-display')
                 if not sku_elem:
                     # Try alternative selectors for Acura site
                     sku_elem = soup.find('span', class_=re.compile(r'sku|part.*number', re.I))
+                if not sku_elem:
+                    sku_elem = soup.find('div', class_=re.compile(r'sku|part.*number', re.I))
+                if not sku_elem:
+                    sku_elem = soup.find('td', string=re.compile(r'part.*number', re.I))
+                if not sku_elem:
+                    sku_elem = soup.find('th', string=re.compile(r'part.*number', re.I))
+                
                 if sku_elem:
                     product_data['sku'] = sku_elem.get_text(strip=True)
                     product_data['pn'] = self.clean_sku(product_data['sku'])
+                    self.logger.info(f"📝 Found SKU via element: {product_data['sku']}")
+                
+                # Method 2: Search for "Part Number:" text and get the value after it
+                if not product_data['sku']:
+                    # Look for text containing "Part Number:" and extract the value
+                    all_text_elements = soup.find_all(string=re.compile(r'Part Number:', re.I))
+                    for text_elem in all_text_elements:
+                        parent = text_elem.parent
+                        if parent:
+                            # Get the text after "Part Number:"
+                            full_text = parent.get_text(strip=True)
+                            if 'Part Number:' in full_text:
+                                # Extract part number after "Part Number:"
+                                match = re.search(r'Part Number:\s*([A-Z0-9\-]+)', full_text, re.I)
+                                if match:
+                                    product_data['sku'] = match.group(1).strip()
+                                    product_data['pn'] = self.clean_sku(product_data['sku'])
+                                    self.logger.info(f"📝 Found SKU via text search: {product_data['sku']}")
+                                    break
+                
+                # Method 3: Try finding in product specifications table
+                if not product_data['sku']:
+                    spec_tables = soup.find_all('table', class_=re.compile(r'spec|product.*spec', re.I))
+                    for table in spec_tables:
+                        rows = table.find_all('tr')
+                        for row in rows:
+                            cells = row.find_all(['td', 'th'])
+                            for i, cell in enumerate(cells):
+                                cell_text = cell.get_text(strip=True)
+                                if 'Part Number' in cell_text and i + 1 < len(cells):
+                                    # Next cell should contain the part number
+                                    next_cell = cells[i + 1]
+                                    part_num = next_cell.get_text(strip=True)
+                                    if part_num:
+                                        product_data['sku'] = part_num
+                                        product_data['pn'] = self.clean_sku(product_data['sku'])
+                                        self.logger.info(f"📝 Found SKU in table: {product_data['sku']}")
+                                        break
+                            if product_data['sku']:
+                                break
+                        if product_data['sku']:
+                            break
+                
+                # Method 4: Extract from meta tags (og:title, description)
+                if not product_data['sku']:
+                    # Try og:title meta tag (e.g., "42700-TZ3-A91 Genuine Acura 19" Wheel Rim")
+                    og_title = soup.find('meta', property='og:title')
+                    if og_title:
+                        og_title_content = og_title.get('content', '')
+                        if og_title_content:
+                            match = re.search(r'([A-Z0-9]{5,}-[A-Z0-9]{1,}-[A-Z0-9]{1,})', og_title_content.upper())
+                            if match:
+                                product_data['sku'] = match.group(1)
+                                product_data['pn'] = self.clean_sku(product_data['sku'])
+                                self.logger.info(f"📝 Found SKU from og:title meta: {product_data['sku']}")
+                    
+                    # Try description meta tag
+                    if not product_data['sku']:
+                        desc_meta = soup.find('meta', {'name': 'description'})
+                        if desc_meta:
+                            desc_content = desc_meta.get('content', '')
+                            if desc_content:
+                                # Pattern: "Genuine 42700-TZ3-A91 19" Wheel Rim" or "AcuraPartsWarehouse offers 42700TZ3A91"
+                                match = re.search(r'([A-Z0-9]{5,}-[A-Z0-9]{1,}-[A-Z0-9]{1,})', desc_content.upper())
+                                if not match:
+                                    # Try without dashes: "42700TZ3A91"
+                                    match = re.search(r'([A-Z0-9]{8,})', desc_content.upper())
+                                    if match and len(match.group(1)) >= 8:
+                                        # Try to format as part number (e.g., 42700TZ3A91 -> 42700-TZ3-A91)
+                                        part_num = match.group(1)
+                                        # Common Acura part number pattern: XXXXX-XXX-XXX
+                                        if len(part_num) >= 10:
+                                            formatted = f"{part_num[:5]}-{part_num[5:8]}-{part_num[8:]}"
+                                            product_data['sku'] = formatted
+                                            product_data['pn'] = self.clean_sku(product_data['sku'])
+                                            self.logger.info(f"📝 Found SKU from description meta (formatted): {product_data['sku']}")
+                                elif match:
+                                    product_data['sku'] = match.group(1)
+                                    product_data['pn'] = self.clean_sku(product_data['sku'])
+                                    self.logger.info(f"📝 Found SKU from description meta: {product_data['sku']}")
+                
+                # Method 5: Extract from canonical link URL
+                if not product_data['sku']:
+                    canonical_link = soup.find('link', {'rel': 'canonical'})
+                    if canonical_link:
+                        canonical_url = canonical_link.get('href', '')
+                        if canonical_url:
+                            # URLs like /oem/acura~wheel~19x8j~42700-tz3-a91.html
+                            match = re.search(r'([A-Z0-9]{5,}-[A-Z0-9]{1,}-[A-Z0-9]{1,})', canonical_url.upper())
+                            if match:
+                                product_data['sku'] = match.group(1)
+                                product_data['pn'] = self.clean_sku(product_data['sku'])
+                                self.logger.info(f"📝 Found SKU from canonical link: {product_data['sku']}")
+                
+                # Method 6: Extract from script tags with JSON data
+                if not product_data['sku']:
+                    script_tags = soup.find_all('script', type=re.compile(r'application/ld\+json|application/json', re.I))
+                    for script in script_tags:
+                        try:
+                            script_content = script.string
+                            if script_content:
+                                import json
+                                data = json.loads(script_content)
+                                # Look for SKU in various JSON-LD fields
+                                if isinstance(data, dict):
+                                    # Try common product schema fields
+                                    sku_fields = ['sku', 'productID', 'mpn', 'partNumber', 'identifier']
+                                    for field in sku_fields:
+                                        if field in data:
+                                            sku_value = str(data[field]).strip()
+                                            if sku_value and re.match(r'^[A-Z0-9\-]+$', sku_value.upper()):
+                                                product_data['sku'] = sku_value
+                                                product_data['pn'] = self.clean_sku(product_data['sku'])
+                                                self.logger.info(f"📝 Found SKU from JSON-LD ({field}): {product_data['sku']}")
+                                                break
+                                    if product_data['sku']:
+                                        break
+                        except (json.JSONDecodeError, AttributeError):
+                            continue
+                
+                # Method 7: Extract from page title tag (before URL/title fallback)
+                if not product_data['sku']:
+                    title_tag = soup.find('title')
+                    if title_tag:
+                        title_text = title_tag.get_text(strip=True)
+                        if title_text:
+                            # Pattern: "42700-TZ3-A91 Genuine Acura 19" Wheel Rim"
+                            match = re.search(r'([A-Z0-9]{5,}-[A-Z0-9]{1,}-[A-Z0-9]{1,})', title_text.upper())
+                            if match:
+                                product_data['sku'] = match.group(1)
+                                product_data['pn'] = self.clean_sku(product_data['sku'])
+                                self.logger.info(f"📝 Found SKU from page title tag: {product_data['sku']}")
+                
+                # Method 8: LAST RESORT - Extract from URL if part number still not found
+                if not product_data['sku']:
+                    # URLs like /oem/acura~disk~wheel~17x4t~topy~42700-tk4-a51.html contain part number
+                    url_match = re.search(r'([A-Z0-9]{5,}-[A-Z0-9]{1,}-[A-Z0-9]{1,})', url.upper())
+                    if url_match:
+                        product_data['sku'] = url_match.group(1)
+                        product_data['pn'] = self.clean_sku(product_data['sku'])
+                        self.logger.info(f"📝 Found SKU from URL (fallback): {product_data['sku']}")
+                
+                # Method 9: LAST RESORT - Extract from product title if part number still not found
+                if not product_data['sku'] and product_data['title']:
+                    # Titles like "Acura 42700-TK4-A51 Spare Wheel" contain part number
+                    title_match = re.search(r'([A-Z0-9]{5,}-[A-Z0-9]{1,}-[A-Z0-9]{1,})', product_data['title'].upper())
+                    if title_match:
+                        product_data['sku'] = title_match.group(1)
+                        product_data['pn'] = self.clean_sku(product_data['sku'])
+                        self.logger.info(f"📝 Found SKU from product title (last resort): {product_data['sku']}")
+                
+                # Log warning if SKU still not found
+                if not product_data['sku']:
+                    self.logger.warning(f"⚠️ Could not extract SKU from {url}")
+                else:
+                    self.logger.info(f"✅ SKU extracted: {product_data['sku']}")
+                    
             except Exception as e:
-                self.logger.debug(f"Error extracting SKU: {str(e)}")
+                self.logger.warning(f"Error extracting SKU: {str(e)}")
+                import traceback
+                self.logger.debug(f"SKU extraction traceback: {traceback.format_exc()}")
             
             # Check if this is actually a wheel product
             try:

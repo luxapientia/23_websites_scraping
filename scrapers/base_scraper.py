@@ -806,6 +806,7 @@ class BaseScraper(ABC):
     WHEEL_KEYWORDS = [
             # Cap keywords FIRST (more specific, should match first)
             'wheel cap',
+            'wheel kit',
             'hub cap',
             'center cap',
             'hubcap',
