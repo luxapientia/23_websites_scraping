@@ -7,6 +7,7 @@ import gc
 from datetime import datetime
 
 from scrapers.tascaparts_scraper import TascaPartsScraper
+from scrapers.acurapartswarehouse_scraper import AcuraPartsWarehouseScraper
 from scrapers.generic_scraper import GenericScraper
 from utils.data_processor import DataProcessor
 from utils.excel_exporter import ExcelExporter
@@ -64,6 +65,8 @@ def create_scraper(site_config):
     
     if site_name == 'tascaparts':
         return TascaPartsScraper()
+    elif site_name == 'acuraparts':
+        return AcuraPartsWarehouseScraper()
     else:
         return GenericScraper(site_config)
 
@@ -83,6 +86,7 @@ def main():
         print("  - etc. (see config/sites_config.json)")
         print("\nExample:")
         print("  python run_single_site.py tascaparts")
+        print("  python run_single_site.py acuraparts")
         sys.exit(1)
     
     site_name = sys.argv[1]
