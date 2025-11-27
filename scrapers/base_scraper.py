@@ -802,19 +802,8 @@ class BaseScraper(ABC):
         self.logger.error(f"Failed to fetch {url} after {max_retries} attempts")
         return None
     
-    def is_wheel_product(self, title, description=''):
-        """
-        Check if product is a wheel or wheel cap (not other wheel parts)
-        
-        Args:
-            title: Product title
-            description: Product description (optional)
-        
-        Returns:
-            bool: True if it's a wheel/wheel cap product, False otherwise
-        """
-        # Keywords that indicate it's a wheel/wheel cap
-        wheel_keywords = [
+    # Wheel-related keywords - shared across all scrapers
+    WHEEL_KEYWORDS = [
             # Cap keywords FIRST (more specific, should match first)
             'wheel cap',
             'hub cap',
@@ -845,16 +834,17 @@ class BaseScraper(ABC):
             '19 inch Kia wheel',
             'wheel disc',
             'rim cap'             
-        ]
-        
-        # Keywords to EXCLUDE (not wheels) - Be very specific to avoid false positives
-        exclude_keywords = [
+    ]
+    
+    # Keywords to EXCLUDE (not wheels) - Be very specific to avoid false positives
+    EXCLUDE_KEYWORDS = [
             'steering wheel',
             'Wheel Flange',
             'wheel bearing',
             'Wheel Spacer',
             'bearing hub',
             'hub bearing',
+            'wheel hub',
             'wheel hub bearing',
             'hub bearing assembly',  # ← Changed from just 'hub assembly'
             'bearing assembly',      # ← More specific
@@ -881,7 +871,22 @@ class BaseScraper(ABC):
             'wheel liner', 
             'wheel adapter',
             'wheel mounting kit'
-        ]
+    ]
+    
+    def is_wheel_product(self, title, description=''):
+        """
+        Check if product is a wheel or wheel cap (not other wheel parts)
+        
+        Args:
+            title: Product title
+            description: Product description (optional)
+        
+        Returns:
+            bool: True if it's a wheel/wheel cap product, False otherwise
+        """
+        # Use class-level keywords
+        wheel_keywords = self.WHEEL_KEYWORDS
+        exclude_keywords = self.EXCLUDE_KEYWORDS
         
         text = f"{title} {description}".lower()
         

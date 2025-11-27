@@ -22,15 +22,43 @@ class AcuraPartsWarehouseScraper(BaseScraper):
     def get_product_urls(self):
         """
         Get all wheel product URLs from acurapartswarehouse.com
-        Strategy: Browse category pages and search, filtering for wheel products early
+        Comprehensive discovery strategy:
+        1. Discover wheel-related category/listing pages (e.g., /oem-acura-spare_wheel.html)
+        2. Discover individual product pages in /oem/ directory
+        3. Discover model-specific wheel pages in /parts-list/
+        4. Discover accessory pages in /accessories/
+        5. Browse category pages
+        6. Use search as fallback
         """
         product_urls = []
         
         try:
-            # PRIMARY METHOD: Browse category pages (wheels are typically in chassis category)
-            self.logger.info("Browsing category pages to find wheel products...")
+            # METHOD 1: Discover wheel-related category/listing pages
+            self.logger.info("METHOD 1: Discovering wheel-related category/listing pages...")
+            category_listing_urls = self._discover_wheel_category_pages()
+            product_urls.extend(category_listing_urls)
+            self.logger.info(f"Found {len(category_listing_urls)} wheel category/listing pages")
             
-            # Categories that might contain wheels
+            # METHOD 2: Discover individual product pages in /oem/ directory
+            self.logger.info("METHOD 2: Discovering individual product pages in /oem/ directory...")
+            oem_product_urls = self._discover_oem_product_pages()
+            product_urls.extend(oem_product_urls)
+            self.logger.info(f"Found {len(oem_product_urls)} individual product pages in /oem/")
+            
+            # METHOD 3: Discover model-specific wheel pages
+            self.logger.info("METHOD 3: Discovering model-specific wheel pages...")
+            model_wheel_urls = self._discover_model_wheel_pages()
+            product_urls.extend(model_wheel_urls)
+            self.logger.info(f"Found {len(model_wheel_urls)} model-specific wheel pages")
+            
+            # METHOD 4: Discover accessory pages
+            self.logger.info("METHOD 4: Discovering wheel accessory pages...")
+            accessory_urls = self._discover_accessory_pages()
+            product_urls.extend(accessory_urls)
+            self.logger.info(f"Found {len(accessory_urls)} wheel accessory pages")
+            
+            # METHOD 5: Browse category pages (wheels are typically in chassis category)
+            self.logger.info("METHOD 5: Browsing category pages...")
             categories = [
                 'acura-chassis',  # Most likely to have wheels
                 'acura-body_air_conditioning',  # May have wheel covers
@@ -44,16 +72,15 @@ class AcuraPartsWarehouseScraper(BaseScraper):
             
             # Remove duplicates
             product_urls = list(set(product_urls))
-            self.logger.info(f"Total unique wheel product URLs from categories: {len(product_urls)}")
+            self.logger.info(f"Total unique wheel product URLs after discovery: {len(product_urls)}")
             
-            # SECONDARY METHOD: Try search if category browsing didn't find enough
-            if len(product_urls) < 50:
-                self.logger.info("Trying search as secondary method...")
-                search_urls = self._search_for_wheels()
-                for url in search_urls:
-                    if url not in product_urls:
-                        product_urls.append(url)
-                self.logger.info(f"After search: Total {len(product_urls)} wheel product URLs")
+            # METHOD 6: Try search as additional method
+            self.logger.info("METHOD 6: Using search as additional method...")
+            search_urls = self._search_for_wheels()
+            for url in search_urls:
+                if url not in product_urls:
+                    product_urls.append(url)
+            self.logger.info(f"After search: Total {len(product_urls)} wheel product URLs")
             
         except Exception as e:
             self.logger.error(f"Error getting product URLs: {str(e)}")
@@ -66,28 +93,401 @@ class AcuraPartsWarehouseScraper(BaseScraper):
         """
         Check if URL or link text contains wheel-related keywords
         Returns True if it's likely a wheel product
+        Uses WHEEL_KEYWORDS and EXCLUDE_KEYWORDS from base_scraper.py
         """
         url_lower = url.lower()
         text_lower = link_text.lower() if link_text else ''
         combined = f"{url_lower} {text_lower}"
         
-        # Wheel-related keywords to match
-        wheel_keywords = [
-            'wheel', 'rim', 'hubcap', 'hub-cap', 'wheel-cap', 'center-cap',
-            'wheel-cover', 'alloy-wheel', 'steel-wheel', 'aluminum-wheel',
-            'chrome-wheel', 'wheel-assembly', 'wheel-set', 'wheel-disc',
-            'disc-wheel', 'front-wheel', 'rear-wheel', 'wheel-rim'
-        ]
+        # Normalize hyphens and underscores to spaces for better matching
+        combined = re.sub(r'[-_]', ' ', combined)
+        
+        # Use wheel keywords and exclude keywords from base_scraper
+        wheel_keywords = self.WHEEL_KEYWORDS
+        exclude_keywords = self.EXCLUDE_KEYWORDS
+        
+        # Check exclusions first
+        for exclude in exclude_keywords:
+            if exclude.lower() in combined:
+                return False
         
         # Check if any wheel keyword is in URL or text
         for keyword in wheel_keywords:
-            if keyword in combined:
-                # Exclude non-wheel products
-                exclude_keywords = ['steering-wheel', 'steering_wheel', 'steeringwheel']
-                if not any(exclude in combined for exclude in exclude_keywords):
+            keyword_lower = keyword.lower()
+            # For single-word keywords like 'rim', match as whole word
+            # For multi-word keywords like 'wheel cap', use substring match
+            if len(keyword.split()) == 1:
+                # Single word: match as whole word using word boundaries
+                pattern = r'\b' + re.escape(keyword_lower) + r'\b'
+                if re.search(pattern, combined):
+                    return True
+            else:
+                # Multi-word: use substring match
+                if keyword_lower in combined:
                     return True
         
         return False
+    
+    def _discover_wheel_category_pages(self):
+        """
+        Discover wheel-related category/listing pages like:
+        - /oem-acura-spare_wheel.html
+        - /oem-acura-zdx-rims.html
+        - /oem-acura-wheel_cover.html
+        - /oem-acura-rims.html
+        Then extract all product links from these pages
+        """
+        product_urls = []
+        
+        try:
+            if not self.driver:
+                self.ensure_driver()
+            
+            # Known wheel-related category pages
+            wheel_category_pages = [
+                'oem-acura-spare_wheel',
+                'oem-acura-rims',
+                'oem-acura-wheel_cover',
+                'oem-acura-alloy_wheel',
+                'oem-acura-steel_wheel',
+                'oem-acura-wheel_cap',
+                'oem-acura-hub_cap',
+                'oem-acura-center_cap',
+            ]
+            
+            for category_page in wheel_category_pages:
+                category_url = f"{self.base_url}/{category_page}.html"
+                self.logger.info(f"Discovering products from: {category_url}")
+                
+                try:
+                    html = self.get_page(category_url, use_selenium=True, wait_time=2)
+                    if not html:
+                        continue
+                    
+                    soup = BeautifulSoup(html, 'lxml')
+                    
+                    # Find all product links - multiple patterns
+                    link_patterns = [
+                        r'/oem-acura-',  # Category listing links
+                        r'/oem/acura~',  # Individual product pages
+                        r'/parts-list/',  # Model-specific pages
+                    ]
+                    
+                    for pattern in link_patterns:
+                        links = soup.find_all('a', href=re.compile(pattern))
+                        
+                        for link in links:
+                            href = link.get('href', '')
+                            if href:
+                                full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                                
+                                # Remove fragment and query params
+                                if '#' in full_url:
+                                    full_url = full_url.split('#')[0]
+                                if '?' in full_url:
+                                    full_url = full_url.split('?')[0]
+                                
+                                full_url = full_url.rstrip('/')
+                                
+                                # Filter for wheel products
+                                link_text = link.get_text(strip=True)
+                                if self._is_wheel_url(full_url, link_text):
+                                    if full_url not in product_urls:
+                                        product_urls.append(full_url)
+                    
+                    # Also extract individual product links from this category page
+                    # Look for links to individual products (they may be listed on this page)
+                    # Scroll to load all products if lazy loading
+                    try:
+                        last_height = self.driver.execute_script("return document.body.scrollHeight")
+                        scroll_attempts = 0
+                        while scroll_attempts < 20:
+                            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                            time.sleep(1)
+                            new_height = self.driver.execute_script("return document.body.scrollHeight")
+                            if new_height == last_height:
+                                break
+                            last_height = new_height
+                            scroll_attempts += 1
+                        
+                        # Get updated HTML after scrolling
+                        html = self.driver.page_source
+                        soup = BeautifulSoup(html, 'lxml')
+                    except:
+                        pass
+                    
+                    # Extract all product links - multiple patterns
+                    all_product_links = soup.find_all('a', href=re.compile(r'/oem/acura~|/oem-acura-|/parts-list/.*wheels|/accessories/acura-'))
+                    for link in all_product_links:
+                        href = link.get('href', '')
+                        if href:
+                            full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                            if '#' in full_url:
+                                full_url = full_url.split('#')[0]
+                            if '?' in full_url:
+                                full_url = full_url.split('?')[0]
+                            full_url = full_url.rstrip('/')
+                            
+                            link_text = link.get_text(strip=True)
+                            if self._is_wheel_url(full_url, link_text):
+                                if full_url not in product_urls:
+                                    product_urls.append(full_url)
+                    
+                    # Handle pagination on category pages
+                    # Look for pagination links and extract products from each page
+                    pagination_links = soup.find_all('a', href=re.compile(rf'{re.escape(category_page)}.*page|p=\d+|pageNumber=\d+'))
+                    unique_pag_urls = set()
+                    for pag_link in pagination_links[:20]:  # Limit to first 20 pages
+                        pag_href = pag_link.get('href', '')
+                        if pag_href:
+                            pag_url = pag_href if pag_href.startswith('http') else f"{self.base_url}{pag_href}"
+                            if '#' in pag_url:
+                                pag_url = pag_url.split('#')[0]
+                            if '?' in pag_url:
+                                pag_url = pag_url.split('?')[0]
+                            pag_url = pag_url.rstrip('/')
+                            
+                            if pag_url not in unique_pag_urls:
+                                unique_pag_urls.add(pag_url)
+                                try:
+                                    pag_html = self.get_page(pag_url, use_selenium=True, wait_time=1)
+                                    if pag_html:
+                                        pag_soup = BeautifulSoup(pag_html, 'lxml')
+                                        pag_links = pag_soup.find_all('a', href=re.compile(r'/oem/acura~|/oem-acura-|/parts-list/.*wheels|/accessories/acura-'))
+                                        for link in pag_links:
+                                            href = link.get('href', '')
+                                            if href:
+                                                full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                                                if '#' in full_url:
+                                                    full_url = full_url.split('#')[0]
+                                                if '?' in full_url:
+                                                    full_url = full_url.split('?')[0]
+                                                full_url = full_url.rstrip('/')
+                                                
+                                                link_text = link.get_text(strip=True)
+                                                if self._is_wheel_url(full_url, link_text):
+                                                    if full_url not in product_urls:
+                                                        product_urls.append(full_url)
+                                except:
+                                    continue
+                    
+                    time.sleep(random.uniform(1, 2))  # Delay between pages
+                    
+                except Exception as e:
+                    self.logger.warning(f"Error discovering from {category_page}: {str(e)}")
+                    continue
+            
+        except Exception as e:
+            self.logger.error(f"Error discovering wheel category pages: {str(e)}")
+            import traceback
+            self.logger.debug(f"Traceback: {traceback.format_exc()}")
+        
+        return product_urls
+    
+    def _discover_oem_product_pages(self):
+        """
+        Discover individual product pages in /oem/ directory
+        Pattern: /oem/acura~*~*.html
+        Example: /oem/acura~disk~wheel~17x4t~topy~42700-tk4-a51.html
+        """
+        product_urls = []
+        
+        try:
+            if not self.driver:
+                self.ensure_driver()
+            
+            # Search for wheel-related terms to find /oem/ product pages
+            search_terms = ['wheel', 'rim', 'spare wheel', 'alloy wheel', 'steel wheel']
+            
+            for search_term in search_terms:
+                search_url = f"{self.base_url}/search?search_str={search_term}"
+                self.logger.info(f"Searching for /oem/ products with term: {search_term}")
+                
+                try:
+                    html = self.get_page(search_url, use_selenium=True, wait_time=2)
+                    if not html:
+                        continue
+                    
+                    soup = BeautifulSoup(html, 'lxml')
+                    
+                    # Find all /oem/ product links
+                    oem_links = soup.find_all('a', href=re.compile(r'/oem/acura~'))
+                    
+                    for link in oem_links:
+                        href = link.get('href', '')
+                        if href:
+                            full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                            
+                            # Remove fragment and query params
+                            if '#' in full_url:
+                                full_url = full_url.split('#')[0]
+                            if '?' in full_url:
+                                full_url = full_url.split('?')[0]
+                            
+                            full_url = full_url.rstrip('/')
+                            
+                            # Filter for wheel products
+                            link_text = link.get_text(strip=True)
+                            if self._is_wheel_url(full_url, link_text):
+                                if full_url not in product_urls:
+                                    product_urls.append(full_url)
+                    
+                    time.sleep(random.uniform(1, 2))
+                    
+                except Exception as e:
+                    self.logger.warning(f"Error searching for /oem/ products with '{search_term}': {str(e)}")
+                    continue
+            
+        except Exception as e:
+            self.logger.error(f"Error discovering /oem/ product pages: {str(e)}")
+            import traceback
+            self.logger.debug(f"Traceback: {traceback.format_exc()}")
+        
+        return product_urls
+    
+    def _discover_model_wheel_pages(self):
+        """
+        Discover model-specific wheel pages
+        Pattern: /parts-list/{year}-acura-{model}/wheels.html
+        Example: /parts-list/2024-acura-mdx/wheels.html
+        """
+        product_urls = []
+        
+        try:
+            if not self.driver:
+                self.ensure_driver()
+            
+            # Acura models
+            acura_models = [
+                'mdx', 'rdx', 'tlx', 'ilx', 'rlx', 'tsx', 'tl', 'rl', 'legend',
+                'integra', 'cl', 'nsx', 'slx', 'vigor', 'zdx', 'ilx_hybrid'
+            ]
+            
+            # Years range
+            years = list(range(1990, 2026))  # 1990 to 2025
+            
+            # Strategy: Use search to find model-specific wheel pages instead of brute force
+            # Search for "wheels" with model names to find /parts-list/ pages
+            for model in acura_models[:10]:  # Limit to first 10 models to avoid too many requests
+                search_url = f"{self.base_url}/search?search_str={model} wheels"
+                
+                try:
+                    html = self.get_page(search_url, use_selenium=True, wait_time=1)
+                    if not html:
+                        continue
+                    
+                    soup = BeautifulSoup(html, 'lxml')
+                    
+                    # Find /parts-list/ wheel pages
+                    parts_list_links = soup.find_all('a', href=re.compile(r'/parts-list/.*wheels'))
+                    
+                    for link in parts_list_links:
+                        href = link.get('href', '')
+                        if href:
+                            parts_list_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                            
+                            # Visit this parts-list page and extract products
+                            try:
+                                parts_html = self.get_page(parts_list_url, use_selenium=True, wait_time=1)
+                                if parts_html:
+                                    parts_soup = BeautifulSoup(parts_html, 'lxml')
+                                    product_links = parts_soup.find_all('a', href=re.compile(r'/oem/acura~|/oem-acura-'))
+                                    
+                                    for prod_link in product_links:
+                                        prod_href = prod_link.get('href', '')
+                                        if prod_href:
+                                            full_url = prod_href if prod_href.startswith('http') else f"{self.base_url}{prod_href}"
+                                            
+                                            if '#' in full_url:
+                                                full_url = full_url.split('#')[0]
+                                            if '?' in full_url:
+                                                full_url = full_url.split('?')[0]
+                                            
+                                            full_url = full_url.rstrip('/')
+                                            
+                                            link_text = prod_link.get_text(strip=True)
+                                            if self._is_wheel_url(full_url, link_text):
+                                                if full_url not in product_urls:
+                                                    product_urls.append(full_url)
+                            except:
+                                continue
+                    
+                    time.sleep(random.uniform(0.5, 1.0))
+                    
+                except Exception as e:
+                    continue
+            
+        except Exception as e:
+            self.logger.error(f"Error discovering model wheel pages: {str(e)}")
+            import traceback
+            self.logger.debug(f"Traceback: {traceback.format_exc()}")
+        
+        return product_urls
+    
+    def _discover_accessory_pages(self):
+        """
+        Discover wheel accessory pages
+        Pattern: /accessories/acura-*.html
+        Example: /accessories/acura-alloy_wheels.html
+        """
+        product_urls = []
+        
+        try:
+            if not self.driver:
+                self.ensure_driver()
+            
+            # Known wheel accessory pages
+            accessory_pages = [
+                'acura-alloy_wheels',
+                'acura-wheel_covers',
+                'acura-wheel_caps',
+                'acura-hub_caps',
+                'acura-center_caps',
+            ]
+            
+            for accessory_page in accessory_pages:
+                accessory_url = f"{self.base_url}/accessories/{accessory_page}.html"
+                self.logger.info(f"Discovering products from: {accessory_url}")
+                
+                try:
+                    html = self.get_page(accessory_url, use_selenium=True, wait_time=2)
+                    if not html:
+                        continue
+                    
+                    soup = BeautifulSoup(html, 'lxml')
+                    
+                    # Find product links
+                    product_links = soup.find_all('a', href=re.compile(r'/oem/acura~|/oem-acura-|/accessories/acura-'))
+                    
+                    for link in product_links:
+                        href = link.get('href', '')
+                        if href:
+                            full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                            
+                            if '#' in full_url:
+                                full_url = full_url.split('#')[0]
+                            if '?' in full_url:
+                                full_url = full_url.split('?')[0]
+                            
+                            full_url = full_url.rstrip('/')
+                            
+                            link_text = link.get_text(strip=True)
+                            if self._is_wheel_url(full_url, link_text):
+                                if full_url not in product_urls:
+                                    product_urls.append(full_url)
+                    
+                    time.sleep(random.uniform(1, 2))
+                    
+                except Exception as e:
+                    self.logger.warning(f"Error discovering from {accessory_page}: {str(e)}")
+                    continue
+            
+        except Exception as e:
+            self.logger.error(f"Error discovering accessory pages: {str(e)}")
+            import traceback
+            self.logger.debug(f"Traceback: {traceback.format_exc()}")
+        
+        return product_urls
     
     def _browse_category(self, category_name):
         """
@@ -125,10 +525,10 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                 except:
                     pass
             
-            # Wait for product links to appear
+            # Wait for product links to appear (multiple patterns)
             try:
                 WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/oem-acura-']"))
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/oem-acura-'], a[href*='/oem/acura~'], a[href*='/parts-list/'], a[href*='/accessories/']"))
                 )
             except:
                 self.logger.warning("Product links not found immediately, continuing anyway...")
@@ -178,8 +578,12 @@ class AcuraPartsWarehouseScraper(BaseScraper):
             
             soup = BeautifulSoup(html, 'lxml')
             
-            # Find ALL product links (Acura uses /oem-acura- pattern)
-            product_links = soup.find_all('a', href=re.compile(r'/oem-acura-'))
+            # Find ALL product links - multiple patterns
+            # Pattern 1: /oem-acura-*.html (category/listing pages)
+            # Pattern 2: /oem/acura~*~*.html (individual product pages)
+            # Pattern 3: /parts-list/*/wheels.html (model-specific pages)
+            # Pattern 4: /accessories/acura-*.html (accessory pages)
+            product_links = soup.find_all('a', href=re.compile(r'/oem-acura-|/oem/acura~|/parts-list/.*wheels|/accessories/acura-'))
             
             for link in product_links:
                 href = link.get('href', '')
@@ -192,9 +596,8 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                         full_url = full_url.split('#')[0]
                     
                     # Extract only the base product URL, remove query params
-                    if '/oem-acura-' in full_url:
-                        if '?' in full_url:
-                            full_url = full_url.split('?')[0]
+                    if '?' in full_url:
+                        full_url = full_url.split('?')[0]
                     
                     # Normalize trailing slashes
                     full_url = full_url.rstrip('/')
@@ -243,12 +646,12 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                                 
                                 try:
                                     WebDriverWait(self.driver, 10).until(
-                                        EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/oem-acura-']"))
+                                        EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/oem-acura-'], a[href*='/oem/acura~'], a[href*='/parts-list/'], a[href*='/accessories/']"))
                                     )
                                 except:
                                     self.logger.debug(f"Product links not found immediately on {pag_url}, continuing...")
                                 
-                                page_links_check = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='/oem-acura-']")
+                                page_links_check = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='/oem-acura-'], a[href*='/oem/acura~'], a[href*='/parts-list/'], a[href*='/accessories/']")
                                 if len(page_links_check) > 0:
                                     page_loaded = True
                                     pag_url_used = pag_url
@@ -315,7 +718,8 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                             continue
                     
                     soup = BeautifulSoup(html, 'lxml')
-                    page_links = soup.find_all('a', href=re.compile(r'/oem-acura-'))
+                    # Find all product links - multiple patterns
+                    page_links = soup.find_all('a', href=re.compile(r'/oem-acura-|/oem/acura~|/parts-list/.*wheels|/accessories/acura-'))
                     
                     page_urls_count = 0
                     for link in page_links:
@@ -326,9 +730,9 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                             if '#' in full_url:
                                 full_url = full_url.split('#')[0]
                             
-                            if '/oem-acura-' in full_url:
-                                if '?' in full_url:
-                                    full_url = full_url.split('?')[0]
+                            # Remove query params
+                            if '?' in full_url:
+                                full_url = full_url.split('?')[0]
                             
                             full_url = full_url.rstrip('/')
                             
@@ -468,8 +872,12 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                 
                 soup = BeautifulSoup(html, 'lxml')
                 
-                # Find ALL product links (Acura uses /oem-acura- pattern)
-                product_links = soup.find_all('a', href=re.compile(r'/oem-acura-'))
+                # Find ALL product links - multiple patterns
+                # Pattern 1: /oem-acura-*.html (category/listing pages)
+                # Pattern 2: /oem/acura~*~*.html (individual product pages)
+                # Pattern 3: /parts-list/*/wheels.html (model-specific pages)
+                # Pattern 4: /accessories/acura-*.html (accessory pages)
+                product_links = soup.find_all('a', href=re.compile(r'/oem-acura-|/oem/acura~|/parts-list/.*wheels|/accessories/acura-'))
                 
                 if len(product_links) > 0:
                     # Found products with this search pattern, extract only wheel products
@@ -482,9 +890,9 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                             if '#' in full_url:
                                 full_url = full_url.split('#')[0]
                             
-                            if '/oem-acura-' in full_url:
-                                if '?' in full_url:
-                                    full_url = full_url.split('?')[0]
+                            # Remove query params
+                            if '?' in full_url:
+                                full_url = full_url.split('?')[0]
                             
                             full_url = full_url.rstrip('/')
                             
