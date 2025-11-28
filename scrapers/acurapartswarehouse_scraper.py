@@ -11,6 +11,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
+from selenium.webdriver.common.action_chains import ActionChains
 
 class AcuraPartsWarehouseScraper(BaseScraper):
     """Scraper for acurapartswarehouse.com"""
@@ -166,42 +167,11 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                     
                     soup = BeautifulSoup(html, 'lxml')
                     
-                    # Find all product links - multiple patterns
-                    link_patterns = [
-                        r'/oem-acura-',  # Category listing links
-                        r'/oem/acura~',  # Individual product pages
-                        r'/parts-list/',  # Model-specific pages
-                    ]
-                    
-                    for pattern in link_patterns:
-                        links = soup.find_all('a', href=re.compile(pattern))
-                        
-                        for link in links:
-                            href = link.get('href', '')
-                            if href:
-                                full_url = href if href.startswith('http') else f"{self.base_url}{href}"
-                                
-                                # Remove fragment and query params
-                                if '#' in full_url:
-                                    full_url = full_url.split('#')[0]
-                                if '?' in full_url:
-                                    full_url = full_url.split('?')[0]
-                                
-                                full_url = full_url.rstrip('/')
-                                
-                                # Filter for wheel products
-                                link_text = link.get_text(strip=True)
-                                if self._is_wheel_url(full_url, link_text):
-                                    if full_url not in product_urls:
-                                        product_urls.append(full_url)
-                    
-                    # Also extract individual product links from this category page
-                    # Look for links to individual products (they may be listed on this page)
-                    # Scroll to load all products if lazy loading
+                    # Scroll to load all products on the first page (if lazy loading)
                     try:
                         last_height = self.driver.execute_script("return document.body.scrollHeight")
                         scroll_attempts = 0
-                        while scroll_attempts < 20:
+                        while scroll_attempts < 30:
                             self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
                             time.sleep(1)
                             new_height = self.driver.execute_script("return document.body.scrollHeight")
@@ -216,62 +186,209 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                     except:
                         pass
                     
-                    # Extract all product links - multiple patterns
-                    all_product_links = soup.find_all('a', href=re.compile(r'/oem/acura~|/oem-acura-|/parts-list/.*wheels|/accessories/acura-'))
+                    # Extract individual product links from the first page
+                    # Focus on individual product pages: /oem/acura~...~...html (not category pages)
+                    # NOTE: Since we're on a wheel category page, ALL products are wheels - no filtering needed
+                    self.logger.info("Extracting products from page 1...")
+                    
+                    # Try multiple patterns to find ALL product links
+                    # Pattern 1: /oem/acura~ (individual product pages)
+                    all_product_links = soup.find_all('a', href=re.compile(r'/oem/acura~'))
+                    
+                    # Also look for links in product cards/sections that might have different structures
+                    # Pattern 2: Look for links containing part numbers in href (e.g., href containing "42700-TZ3-A91")
+                    part_number_links = soup.find_all('a', href=re.compile(r'[A-Z0-9]{5,}-[A-Z0-9]{1,}-[A-Z0-9]{1,}'))
+                    for link in part_number_links:
+                        href = link.get('href', '')
+                        if href and '/oem/acura~' in href and link not in all_product_links:
+                            all_product_links.append(link)
+                    
+                    # Pattern 3: Look for links in product title/heading areas
+                    product_sections = soup.find_all(['div', 'section', 'article'], class_=re.compile(r'product|item|card', re.I))
+                    for section in product_sections:
+                        section_links = section.find_all('a', href=re.compile(r'/oem/acura~'))
+                        for link in section_links:
+                            if link not in all_product_links:
+                                all_product_links.append(link)
+                    
+                    self.logger.info(f"Found {len(all_product_links)} product links on page 1")
+                    first_page_count = 0
+                    
                     for link in all_product_links:
                         href = link.get('href', '')
                         if href:
                             full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                            
+                            # Remove fragment and query params
                             if '#' in full_url:
                                 full_url = full_url.split('#')[0]
                             if '?' in full_url:
                                 full_url = full_url.split('?')[0]
+                            
                             full_url = full_url.rstrip('/')
                             
-                            link_text = link.get_text(strip=True)
-                            if self._is_wheel_url(full_url, link_text):
-                                if full_url not in product_urls:
-                                    product_urls.append(full_url)
+                            # On wheel category pages, ALL products are wheels - collect all of them
+                            # No need to filter - we're already on a wheel-specific category page
+                            # Only collect if it's an individual product page (not a category listing page)
+                            if '/oem/acura~' in full_url and full_url not in product_urls:
+                                product_urls.append(full_url)
+                                first_page_count += 1
+                    
+                    self.logger.info(f"Page 1: Collected {first_page_count} unique product URLs (Total: {len(product_urls)})")
                     
                     # Handle pagination on category pages
-                    # Look for pagination links and extract products from each page
-                    pagination_links = soup.find_all('a', href=re.compile(rf'{re.escape(category_page)}.*page|p=\d+|pageNumber=\d+'))
-                    unique_pag_urls = set()
-                    for pag_link in pagination_links[:20]:  # Limit to first 20 pages
-                        pag_href = pag_link.get('href', '')
-                        if pag_href:
-                            pag_url = pag_href if pag_href.startswith('http') else f"{self.base_url}{pag_href}"
-                            if '#' in pag_url:
-                                pag_url = pag_url.split('#')[0]
-                            if '?' in pag_url:
-                                pag_url = pag_url.split('?')[0]
-                            pag_url = pag_url.rstrip('/')
+                    # Extract total page count from the page (e.g., "Page 1 of 20")
+                    total_pages = 1
+                    try:
+                        # Look for "Page X of Y" pattern
+                        page_info = soup.find(string=re.compile(r'Page\s+\d+\s+of\s+\d+', re.I))
+                        if page_info:
+                            page_match = re.search(r'Page\s+\d+\s+of\s+(\d+)', str(page_info), re.I)
+                            if page_match:
+                                total_pages = int(page_match.group(1))
+                                self.logger.info(f"Found pagination: {total_pages} total pages")
+                        
+                        # Alternative: Look for "X-Y of Z Results" pattern
+                        if total_pages == 1:
+                            results_info = soup.find(string=re.compile(r'\d+-\d+\s+of\s+\d+\s+Results', re.I))
+                            if results_info:
+                                results_match = re.search(r'\d+-\d+\s+of\s+(\d+)', str(results_info), re.I)
+                                if results_match:
+                                    total_results = int(results_match.group(1))
+                                    # Estimate pages (usually ~20 products per page)
+                                    estimated_pages = max(1, (total_results + 19) // 20)
+                                    total_pages = estimated_pages
+                                    self.logger.info(f"Found {total_results} total results, estimating {total_pages} pages")
+                        
+                        # Alternative: Count pagination number links
+                        if total_pages == 1:
+                            pagination_numbers = soup.find_all('a', href=re.compile(r'page=\d+|p=\d+', re.I))
+                            if pagination_numbers:
+                                max_page_num = 1
+                                for pag_link in pagination_numbers:
+                                    pag_href = pag_link.get('href', '')
+                                    if pag_href:
+                                        # Extract page number from URL
+                                        page_match = re.search(r'[?&](?:page|p)=(\d+)', pag_href, re.I)
+                                        if page_match:
+                                            page_num = int(page_match.group(1))
+                                            max_page_num = max(max_page_num, page_num)
+                                if max_page_num > 1:
+                                    total_pages = max_page_num
+                                    self.logger.info(f"Found pagination links up to page {total_pages}")
+                    except Exception as e:
+                        self.logger.debug(f"Could not determine total pages: {str(e)}, defaulting to 1")
+                    
+                    # Extract products from remaining pages (page 1 already extracted above)
+                    if total_pages > 1:
+                        self.logger.info(f"Extracting products from pages 2-{total_pages} of {category_page}")
+                        
+                        # Try different pagination URL patterns
+                        pagination_patterns = [
+                            f"{category_url}?page={{page_num}}",
+                            f"{category_url}?p={{page_num}}",
+                            f"{category_url}?pageNumber={{page_num}}",
+                        ]
+                        
+                        for page_num in range(2, total_pages + 1):
+                            page_found = False
                             
-                            if pag_url not in unique_pag_urls:
-                                unique_pag_urls.add(pag_url)
+                            for pattern in pagination_patterns:
+                                pag_url = pattern.format(page_num=page_num)
+                                
                                 try:
-                                    pag_html = self.get_page(pag_url, use_selenium=True, wait_time=1)
-                                    if pag_html:
+                                    self.logger.info(f"Loading page {page_num}/{total_pages}: {pag_url}")
+                                    
+                                    pag_html = self.get_page(pag_url, use_selenium=True, wait_time=2)
+                                    if not pag_html or len(pag_html) < 5000:
+                                        continue
+                                    
+                                    pag_soup = BeautifulSoup(pag_html, 'lxml')
+                                    
+                                    # Scroll to load all products on this page (if lazy loading)
+                                    try:
+                                        last_height = self.driver.execute_script("return document.body.scrollHeight")
+                                        scroll_attempts = 0
+                                        while scroll_attempts < 20:
+                                            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                                            time.sleep(1)
+                                            new_height = self.driver.execute_script("return document.body.scrollHeight")
+                                            if new_height == last_height:
+                                                break
+                                            last_height = new_height
+                                            scroll_attempts += 1
+                                        
+                                        # Get updated HTML after scrolling
+                                        pag_html = self.driver.page_source
                                         pag_soup = BeautifulSoup(pag_html, 'lxml')
-                                        pag_links = pag_soup.find_all('a', href=re.compile(r'/oem/acura~|/oem-acura-|/parts-list/.*wheels|/accessories/acura-'))
+                                    except:
+                                        pass
+                                    
+                                    # Extract product links from this page - only individual product pages
+                                    # NOTE: Since we're on a wheel category page, ALL products are wheels - no filtering needed
+                                    
+                                    # Try multiple patterns to find ALL product links
+                                    pag_links = pag_soup.find_all('a', href=re.compile(r'/oem/acura~'))
+                                    
+                                    # Also look for links in product cards/sections
+                                    product_sections = pag_soup.find_all(['div', 'section', 'article'], class_=re.compile(r'product|item|card', re.I))
+                                    for section in product_sections:
+                                        section_links = section.find_all('a', href=re.compile(r'/oem/acura~'))
+                                        for link in section_links:
+                                            if link not in pag_links:
+                                                pag_links.append(link)
+                                    
+                                    # Also look for links containing part numbers
+                                    part_number_links = pag_soup.find_all('a', href=re.compile(r'[A-Z0-9]{5,}-[A-Z0-9]{1,}-[A-Z0-9]{1,}'))
+                                    for link in part_number_links:
+                                        href = link.get('href', '')
+                                        if href and '/oem/acura~' in href and link not in pag_links:
+                                            pag_links.append(link)
+                                    
+                                    if len(pag_links) > 0:
+                                        page_found = True
+                                        page_product_count = 0
+                                        
+                                        self.logger.info(f"Page {page_num}: Found {len(pag_links)} product links")
+                                        
                                         for link in pag_links:
                                             href = link.get('href', '')
                                             if href:
                                                 full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                                                
+                                                # Remove fragment and query params
                                                 if '#' in full_url:
                                                     full_url = full_url.split('#')[0]
                                                 if '?' in full_url:
+                                                    # Keep only base URL, remove query params
                                                     full_url = full_url.split('?')[0]
+                                                
                                                 full_url = full_url.rstrip('/')
                                                 
-                                                link_text = link.get_text(strip=True)
-                                                if self._is_wheel_url(full_url, link_text):
-                                                    if full_url not in product_urls:
-                                                        product_urls.append(full_url)
-                                except:
+                                                # On wheel category pages, ALL products are wheels - collect all of them
+                                                # No need to filter - we're already on a wheel-specific category page
+                                                # Only collect if it's an individual product page (not a category listing page)
+                                                if '/oem/acura~' in full_url and full_url not in product_urls:
+                                                    product_urls.append(full_url)
+                                                    page_product_count += 1
+                                        
+                                        self.logger.info(f"Page {page_num}: Collected {page_product_count} new unique product URLs (Total: {len(product_urls)})")
+                                        
+                                        if page_found:
+                                            break  # Found working pagination pattern
+                                            
+                                except Exception as e:
+                                    self.logger.debug(f"Error loading page {page_num} with pattern {pattern}: {str(e)}")
                                     continue
+                            
+                            if not page_found:
+                                self.logger.warning(f"Could not load page {page_num} with any pagination pattern")
+                            
+                            # Delay between pages
+                            if page_num < total_pages:
+                                time.sleep(random.uniform(1, 2))
                     
-                    time.sleep(random.uniform(1, 2))  # Delay between pages
+                    time.sleep(random.uniform(1, 2))  # Delay between category pages
                     
                 except Exception as e:
                     self.logger.warning(f"Error discovering from {category_page}: {str(e)}")
@@ -775,10 +892,154 @@ class AcuraPartsWarehouseScraper(BaseScraper):
         
         return product_urls
     
+    def _handle_vehicle_selection_modal(self):
+        """
+        Handle the vehicle selection modal that appears on search
+        Tries to close the modal or select a default vehicle
+        """
+        try:
+            # Wait a moment for modal to appear
+            time.sleep(2)
+            
+            # Try multiple strategies to handle the modal
+            # Strategy 1: Try to close the modal with X button
+            close_selectors = [
+                ".v-vin-confirm-close",  # Close button in modal
+                ".ab-modal-times",  # Generic modal close button
+                ".v-cm-close",  # Vehicle selection modal close
+                "button[aria-label*='close']",
+                "button[aria-label*='Close']",
+                ".modal-close",
+                "button.close",
+            ]
+            
+            for selector in close_selectors:
+                try:
+                    close_btn = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    if close_btn.is_displayed():
+                        close_btn.click()
+                        self.logger.info(f"Closed vehicle selection modal using selector: {selector}")
+                        time.sleep(1)
+                        return True
+                except:
+                    continue
+            
+            # Strategy 2: Try clicking outside the modal (on overlay/backdrop)
+            try:
+                overlay = self.driver.find_element(By.CSS_SELECTOR, ".ab-mask, .ab-modal, .modal-backdrop")
+                if overlay.is_displayed():
+                    # Click on overlay to close modal
+                    ActionChains(self.driver).move_to_element(overlay).click().perform()
+                    self.logger.info("Closed modal by clicking overlay")
+                    time.sleep(1)
+                    return True
+            except:
+                pass
+            
+            # Strategy 3: Press Escape key
+            try:
+                from selenium.webdriver.common.keys import Keys
+                ActionChains(self.driver).send_keys(Keys.ESCAPE).perform()
+                self.logger.info("Pressed Escape key to close modal")
+                time.sleep(1)
+                return True
+            except:
+                pass
+            
+            # Strategy 4: Select a default vehicle (if modal doesn't close)
+            # Look for vehicle selection dropdowns and select first available
+            try:
+                # Try to select a model dropdown
+                model_selectors = [
+                    ".v-base-model-content .av-ipt",
+                    ".av-ipt",
+                    "select[name*='model']",
+                    ".ab-select-input-control",
+                ]
+                
+                for selector in model_selectors:
+                    try:
+                        model_dropdown = self.driver.find_element(By.CSS_SELECTOR, selector)
+                        if model_dropdown.is_displayed():
+                            # Click to open dropdown
+                            model_dropdown.click()
+                            time.sleep(0.5)
+                            
+                            # Try to select first available model
+                            first_option = self.driver.find_element(By.CSS_SELECTOR, ".ab-select-col > li:first-child, .av-ipt-drop li:first-child")
+                            if first_option:
+                                first_option.click()
+                                time.sleep(0.5)
+                                
+                                # Try to select year
+                                year_dropdown = self.driver.find_element(By.CSS_SELECTOR, ".v-base-model-content .av-ipt:last-child, select[name*='year']")
+                                if year_dropdown:
+                                    year_dropdown.click()
+                                    time.sleep(0.5)
+                                    first_year = self.driver.find_element(By.CSS_SELECTOR, ".ab-select-col > li:first-child, option:not([value=''])")
+                                    if first_year:
+                                        first_year.click()
+                                        time.sleep(0.5)
+                                
+                                # Click Go button
+                                go_btn = self.driver.find_element(By.CSS_SELECTOR, ".av-btn-red, button[type='submit'], .v-base-model-content .av-btn")
+                                if go_btn:
+                                    go_btn.click()
+                                    self.logger.info("Selected default vehicle and clicked Go")
+                                    time.sleep(2)
+                                    return True
+                    except:
+                        continue
+            except:
+                pass
+            
+            # If modal still appears, try JavaScript to close it
+            try:
+                self.driver.execute_script("""
+                    // Try to close modal with JavaScript
+                    var modals = document.querySelectorAll('.ab-modal, .v-vin-confirm-confirm, .v-cm-modal');
+                    for (var i = 0; i < modals.length; i++) {
+                        var modal = modals[i];
+                        if (modal.style.display !== 'none') {
+                            var closeBtn = modal.querySelector('.ab-modal-times, .v-vin-confirm-close, .v-cm-close');
+                            if (closeBtn) closeBtn.click();
+                            else {
+                                // Hide modal directly
+                                modal.style.display = 'none';
+                                if (modal.parentElement) {
+                                    modal.parentElement.style.display = 'none';
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Also try to remove overlay
+                    var overlays = document.querySelectorAll('.ab-mask, .modal-backdrop');
+                    for (var i = 0; i < overlays.length; i++) {
+                        overlays[i].style.display = 'none';
+                    }
+                """)
+                self.logger.info("Attempted to close modal using JavaScript")
+                time.sleep(1)
+                return True
+            except:
+                pass
+            
+            return False
+            
+        except Exception as e:
+            self.logger.debug(f"Error handling vehicle selection modal: {str(e)}")
+            return False
+    
     def _search_for_wheels(self):
         """
-        Search for wheels using site search - handles pagination and dynamic content
+        Search for wheels using site search - handles vehicle selection modal and pagination
         Filters for wheel products early based on URL and link text
+        
+        NOTE: This site requires vehicle selection before search. This method tries to:
+        1. Close the vehicle selection modal
+        2. Or select a default vehicle
+        3. Or use direct category URLs that don't require vehicle selection
         """
         product_urls = []
         
@@ -786,129 +1047,178 @@ class AcuraPartsWarehouseScraper(BaseScraper):
             if not self.driver:
                 self.ensure_driver()
             
-            # Try multiple search URL patterns
-            search_urls = [
-                f"{self.base_url}/search?search_str=wheel",
-                f"{self.base_url}/search?q=wheel",
-                f"{self.base_url}/search/wheel",
+            # Since search requires vehicle selection, try alternative approaches first:
+            # 1. Use direct category/listing URLs that don't require vehicle selection
+            self.logger.info("Trying direct wheel category URLs (bypassing search)...")
+            direct_category_urls = [
+                f"{self.base_url}/oem-acura-spare_wheel.html",
+                f"{self.base_url}/oem-acura-rims.html",
+                f"{self.base_url}/oem-acura-wheel_cover.html",
+                f"{self.base_url}/oem-acura-alloy_wheel.html",
+                f"{self.base_url}/oem-acura-steel_wheel.html",
+                f"{self.base_url}/category/acura-chassis.html",  # Wheels are often in chassis category
+                f"{self.base_url}/accessories/acura-alloy_wheels.html",
             ]
             
-            for search_url in search_urls:
-                self.logger.info(f"Trying search: {search_url}")
-                
-                # Increase page load timeout for search page
-                original_timeout = self.page_load_timeout
+            for category_url in direct_category_urls:
                 try:
-                    self.page_load_timeout = 60
-                    self.driver.set_page_load_timeout(60)
-                    
-                    # Use get_page() instead of direct driver.get() for better error handling
-                    html = self.get_page(search_url, use_selenium=True, wait_time=2)
-                    if not html:
-                        self.logger.warning(f"Failed to fetch search page: {search_url}")
-                        continue  # Try next search URL pattern
-                    
+                    self.logger.info(f"Trying direct category URL: {category_url}")
+                    html = self.get_page(category_url, use_selenium=True, wait_time=2)
+                    if html and len(html) > 5000:  # Valid page content
+                        soup = BeautifulSoup(html, 'lxml')
+                        product_links = soup.find_all('a', href=re.compile(r'/oem-acura-|/oem/acura~|/parts-list/.*wheels|/accessories/acura-'))
+                        
+                        for link in product_links:
+                            href = link.get('href', '')
+                            if href:
+                                full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                                if '#' in full_url:
+                                    full_url = full_url.split('#')[0]
+                                if '?' in full_url:
+                                    full_url = full_url.split('?')[0]
+                                full_url = full_url.rstrip('/')
+                                
+                                link_text = link.get_text(strip=True)
+                                if self._is_wheel_url(full_url, link_text):
+                                    if full_url not in product_urls:
+                                        product_urls.append(full_url)
+                        
+                        if product_links:
+                            self.logger.info(f"Found {len(product_links)} product links from {category_url}")
                 except Exception as e:
-                    self.logger.warning(f"Error loading search page {search_url}: {str(e)}")
-                    continue  # Try next search URL pattern
-                finally:
-                    # Restore original timeout
-                    try:
-                        self.page_load_timeout = original_timeout
-                        self.driver.set_page_load_timeout(original_timeout)
-                    except:
-                        pass
+                    self.logger.debug(f"Error trying direct category URL {category_url}: {str(e)}")
+                    continue
             
-                # Wait for search results to load
-                try:
-                    WebDriverWait(self.driver, 10).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/oem-acura-']"))
-                    )
-                except:
-                    self.logger.warning("Product links not found immediately, continuing anyway...")
+            # 2. Now try search with modal handling
+            if len(product_urls) < 50:  # Only try search if we didn't find many products
+                self.logger.info("Trying search method (will handle vehicle selection modal)...")
                 
-                # Scroll to load more products (if lazy loading)
-                self.logger.info("Scrolling to load all products on current page...")
-                try:
-                    last_height = self.driver.execute_script("return document.body.scrollHeight")
-                    scroll_attempts = 0
-                    max_scrolls = 50
-                    no_change_count = 0
+                # Try multiple search URL patterns
+                search_urls = [
+                    f"{self.base_url}/search?search_str=wheel",
+                    f"{self.base_url}/search?q=wheel",
+                    f"{self.base_url}/search/wheel",
+                ]
+                
+                for search_url in search_urls:
+                    self.logger.info(f"Trying search: {search_url}")
                     
-                    while scroll_attempts < max_scrolls:
+                    # Increase page load timeout for search page
+                    original_timeout = self.page_load_timeout
+                    try:
+                        self.page_load_timeout = 60
+                        self.driver.set_page_load_timeout(60)
+                        
+                        # Use get_page() instead of direct driver.get() for better error handling
+                        html = self.get_page(search_url, use_selenium=True, wait_time=2)
+                        if not html:
+                            self.logger.warning(f"Failed to fetch search page: {search_url}")
+                            continue  # Try next search URL pattern
+                        
+                        # Handle vehicle selection modal if it appears
+                        self._handle_vehicle_selection_modal()
+                        
+                    except Exception as e:
+                        self.logger.warning(f"Error loading search page {search_url}: {str(e)}")
+                        continue  # Try next search URL pattern
+                    finally:
+                        # Restore original timeout
                         try:
-                            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                            time.sleep(1.5)
-                            
-                            try:
-                                new_height = self.driver.execute_script("return document.body.scrollHeight")
-                            except Exception as scroll_error:
-                                self.logger.warning(f"Error checking scroll height: {str(scroll_error)}")
-                                break
-                            
-                            if new_height == last_height:
-                                no_change_count += 1
-                                if no_change_count >= 3:
-                                    break
-                            else:
-                                no_change_count = 0
-                            last_height = new_height
-                            scroll_attempts += 1
-                        except Exception as scroll_error:
-                            self.logger.warning(f"Error during scrolling: {str(scroll_error)}")
-                            break
-                except Exception as scroll_error:
-                    self.logger.warning(f"Error initializing scroll: {str(scroll_error)}")
-                
-                # Get page source after scrolling
-                try:
-                    html = self.driver.page_source
-                except Exception as page_source_error:
-                    self.logger.error(f"Error accessing page_source: {str(page_source_error)}")
-                    html = self.get_page(search_url, use_selenium=True, wait_time=1)
-                    if not html:
-                        self.logger.warning("Could not retrieve page source, trying next search pattern...")
-                        continue
-                
-                soup = BeautifulSoup(html, 'lxml')
-                
-                # Find ALL product links - multiple patterns
-                # Pattern 1: /oem-acura-*.html (category/listing pages)
-                # Pattern 2: /oem/acura~*~*.html (individual product pages)
-                # Pattern 3: /parts-list/*/wheels.html (model-specific pages)
-                # Pattern 4: /accessories/acura-*.html (accessory pages)
-                product_links = soup.find_all('a', href=re.compile(r'/oem-acura-|/oem/acura~|/parts-list/.*wheels|/accessories/acura-'))
-                
-                if len(product_links) > 0:
-                    # Found products with this search pattern, extract only wheel products
-                    wheel_count = 0
-                    for link in product_links:
-                        href = link.get('href', '')
-                        if href:
-                            full_url = href if href.startswith('http') else f"{self.base_url}{href}"
-                            
-                            if '#' in full_url:
-                                full_url = full_url.split('#')[0]
-                            
-                            # Remove query params
-                            if '?' in full_url:
-                                full_url = full_url.split('?')[0]
-                            
-                            full_url = full_url.rstrip('/')
-                            
-                            # Filter for wheel products only
-                            link_text = link.get_text(strip=True)
-                            if self._is_wheel_url(full_url, link_text):
-                                if full_url not in product_urls:
-                                    product_urls.append(full_url)
-                                    wheel_count += 1
+                            self.page_load_timeout = original_timeout
+                            self.driver.set_page_load_timeout(original_timeout)
+                        except:
+                            pass
                     
-                    self.logger.info(f"Found {len(product_links)} product links, {wheel_count} wheel products with search pattern: {search_url}")
-                    # Found working search pattern, exit loop
-                    break
-                else:
-                    self.logger.warning(f"No products found with search pattern: {search_url}")
-                    continue  # Try next search pattern
+                    # Wait for search results to load (after modal is handled)
+                    try:
+                        WebDriverWait(self.driver, 10).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/oem-acura-'], a[href*='/oem/acura~']"))
+                        )
+                    except:
+                        self.logger.warning("Product links not found immediately, continuing anyway...")
+                    
+                    # Scroll to load more products (if lazy loading)
+                    self.logger.info("Scrolling to load all products on current page...")
+                    try:
+                        last_height = self.driver.execute_script("return document.body.scrollHeight")
+                        scroll_attempts = 0
+                        max_scrolls = 50
+                        no_change_count = 0
+                        
+                        while scroll_attempts < max_scrolls:
+                            try:
+                                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                                time.sleep(1.5)
+                                
+                                try:
+                                    new_height = self.driver.execute_script("return document.body.scrollHeight")
+                                except Exception as scroll_error:
+                                    self.logger.warning(f"Error checking scroll height: {str(scroll_error)}")
+                                    break
+                                
+                                if new_height == last_height:
+                                    no_change_count += 1
+                                    if no_change_count >= 3:
+                                        break
+                                else:
+                                    no_change_count = 0
+                                last_height = new_height
+                                scroll_attempts += 1
+                            except Exception as scroll_error:
+                                self.logger.warning(f"Error during scrolling: {str(scroll_error)}")
+                                break
+                    except Exception as scroll_error:
+                        self.logger.warning(f"Error initializing scroll: {str(scroll_error)}")
+                    
+                    # Get page source after scrolling
+                    try:
+                        html = self.driver.page_source
+                    except Exception as page_source_error:
+                        self.logger.error(f"Error accessing page_source: {str(page_source_error)}")
+                        html = self.get_page(search_url, use_selenium=True, wait_time=1)
+                        if not html:
+                            self.logger.warning("Could not retrieve page source, trying next search pattern...")
+                            continue
+                    
+                    soup = BeautifulSoup(html, 'lxml')
+                    
+                    # Find ALL product links - multiple patterns
+                    # Pattern 1: /oem-acura-*.html (category/listing pages)
+                    # Pattern 2: /oem/acura~*~*.html (individual product pages)
+                    # Pattern 3: /parts-list/*/wheels.html (model-specific pages)
+                    # Pattern 4: /accessories/acura-*.html (accessory pages)
+                    product_links = soup.find_all('a', href=re.compile(r'/oem-acura-|/oem/acura~|/parts-list/.*wheels|/accessories/acura-'))
+                    
+                    if len(product_links) > 0:
+                        # Found products with this search pattern, extract only wheel products
+                        wheel_count = 0
+                        for link in product_links:
+                            href = link.get('href', '')
+                            if href:
+                                full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                                
+                                if '#' in full_url:
+                                    full_url = full_url.split('#')[0]
+                                
+                                # Remove query params
+                                if '?' in full_url:
+                                    full_url = full_url.split('?')[0]
+                                
+                                full_url = full_url.rstrip('/')
+                                
+                                # Filter for wheel products only
+                                link_text = link.get_text(strip=True)
+                                if self._is_wheel_url(full_url, link_text):
+                                    if full_url not in product_urls:
+                                        product_urls.append(full_url)
+                                        wheel_count += 1
+                        
+                        self.logger.info(f"Found {len(product_links)} product links, {wheel_count} wheel products with search pattern: {search_url}")
+                        # Found working search pattern, exit loop
+                        break
+                    else:
+                        self.logger.warning(f"No products found with search pattern: {search_url}")
+                        continue  # Try next search pattern
             
             self.logger.info(f"Search complete. Total unique product URLs found: {len(product_urls)}")
             
@@ -1001,7 +1311,74 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                     # Wait for page to fully load - realistic timing
                     time.sleep(random.uniform(1.5, 3.0))  # Increased to 1.5-3s for more human-like behavior
                     
-                    # Wait for product title to load using WebDriverWait - realistic timeout
+                    # Scroll to load all dynamic content (fitments, specifications, etc.)
+                    try:
+                        self.logger.info("Scrolling to load all dynamic content...")
+                        last_height = self.driver.execute_script("return document.body.scrollHeight")
+                        scroll_attempts = 0
+                        max_scrolls = 30
+                        no_change_count = 0
+                        
+                        while scroll_attempts < max_scrolls:
+                            # Scroll down
+                            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                            time.sleep(0.5)
+                            
+                            # Scroll back up a bit (human-like behavior)
+                            self.driver.execute_script("window.scrollBy(0, -200);")
+                            time.sleep(0.3)
+                            
+                            # Scroll down again
+                            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                            time.sleep(1)
+                            
+                            new_height = self.driver.execute_script("return document.body.scrollHeight")
+                            if new_height == last_height:
+                                no_change_count += 1
+                                if no_change_count >= 3:
+                                    break
+                            else:
+                                no_change_count = 0
+                            last_height = new_height
+                            scroll_attempts += 1
+                        
+                        # Scroll to top to ensure all content is accessible
+                        self.driver.execute_script("window.scrollTo(0, 0);")
+                        time.sleep(0.5)
+                        
+                        # Scroll to middle to trigger any lazy-loaded content
+                        self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight / 2);")
+                        time.sleep(0.5)
+                        
+                        # Scroll to bottom again
+                        self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                        time.sleep(1)
+                        
+                        self.logger.info("Finished scrolling, content should be fully loaded")
+                    except Exception as scroll_error:
+                        self.logger.debug(f"Error during scrolling: {str(scroll_error)}")
+                    
+                    # Wait for product title and key elements to load using WebDriverWait
+                    try:
+                        # Wait for product title
+                        WebDriverWait(self.driver, 10).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, "h1, h2, .product-title, [data-product-title]"))
+                        )
+                        
+                        # Wait a bit more for fitment data to load (if dynamically loaded)
+                        time.sleep(1)
+                        
+                        # Try to wait for fitment-related elements
+                        try:
+                            WebDriverWait(self.driver, 5).until(
+                                EC.presence_of_element_located((By.CSS_SELECTOR, "script[type='application/json'], ul, ol, table, .fitment, [class*='fitment']"))
+                            )
+                        except:
+                            pass  # Fitment elements might not be present, continue anyway
+                            
+                    except Exception as wait_error:
+                        self.logger.debug(f"Timeout waiting for elements: {str(wait_error)}")
+                    
                     # Add delay before accessing page_source (more human-like)
                     time.sleep(random.uniform(0.5, 1.0))
                     html = self.driver.page_source  # Get HTML once for multiple checks
@@ -1581,7 +1958,7 @@ class AcuraPartsWarehouseScraper(BaseScraper):
             except Exception as e:
                 self.logger.debug(f"Error extracting MSRP: {str(e)}")
             
-            # Extract image URL with error handling
+            # Extract image URL with error handling - try to get highest quality image
             try:
                 img_elem = soup.find('img', class_='product-main-image')
                 if not img_elem:
@@ -1589,14 +1966,36 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                     img_elem = (soup.find('img', class_='product-image') or 
                                soup.find('img', id='product-image') or
                                soup.find('img', class_=re.compile(r'product.*img|main.*image', re.I)))
+                
+                # Also try og:image meta tag
+                if not img_elem:
+                    og_image = soup.find('meta', property='og:image')
+                    if og_image:
+                        img_url = og_image.get('content', '')
+                        if img_url:
+                            product_data['image_url'] = img_url if img_url.startswith('http') else f"{self.base_url}{img_url}"
+                
                 if img_elem:
-                    img_url = img_elem.get('src') or img_elem.get('data-src') or img_elem.get('data-lazy-src')
+                    # Try multiple attributes for image URL (prefer higher quality)
+                    img_url = (img_elem.get('data-src-large') or 
+                              img_elem.get('data-src') or 
+                              img_elem.get('data-lazy-src') or
+                              img_elem.get('src'))
+                    
                     if img_url:
-                        product_data['image_url'] = f"https:{img_url}" if img_url.startswith('//') else img_url
+                        # Normalize image URL
+                        if img_url.startswith('//'):
+                            product_data['image_url'] = f"https:{img_url}"
+                        elif img_url.startswith('/'):
+                            product_data['image_url'] = f"{self.base_url}{img_url}"
+                        elif not img_url.startswith('http'):
+                            product_data['image_url'] = f"{self.base_url}/{img_url}"
+                        else:
+                            product_data['image_url'] = img_url
             except Exception as e:
                 self.logger.debug(f"Error extracting image URL: {str(e)}")
             
-            # Extract description with error handling
+            # Extract description with error handling - try multiple methods
             try:
                 desc_elem = soup.find('span', class_='description_body')
                 if not desc_elem:
@@ -1604,8 +2003,25 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                     desc_elem = (soup.find('div', class_='description') or 
                                 soup.find('p', class_='product-description') or
                                 soup.find('div', class_=re.compile(r'description|product.*desc', re.I)))
-                if desc_elem:
+                
+                # Also try meta description
+                if not desc_elem:
+                    meta_desc = soup.find('meta', {'name': 'description'})
+                    if meta_desc:
+                        desc_content = meta_desc.get('content', '')
+                        if desc_content and len(desc_content) > 20:  # Only use if substantial
+                            product_data['description'] = desc_content.strip()
+                
+                if desc_elem and not product_data['description']:
                     product_data['description'] = desc_elem.get_text(strip=True, separator=' ')
+                
+                # Also try to get full product specifications as description
+                if not product_data['description'] or len(product_data['description']) < 20:
+                    spec_section = soup.find('div', class_=re.compile(r'product.*spec|specification', re.I))
+                    if spec_section:
+                        spec_text = spec_section.get_text(strip=True, separator=' ')
+                        if spec_text and len(spec_text) > 20:
+                            product_data['description'] = spec_text
             except Exception as e:
                 self.logger.debug(f"Error extracting description: {str(e)}")
             
@@ -1615,7 +2031,25 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                 if not also_known_elem:
                     # Try alternative selectors
                     also_known_elem = soup.find('div', class_=re.compile(r'also.*known|other.*name', re.I))
-                if also_known_elem:
+                
+                # Also look for "Other Name:" text in product specifications
+                if not also_known_elem:
+                    # Look for text containing "Other Name:" and extract the value after it
+                    all_text_elements = soup.find_all(string=re.compile(r'Other Name:', re.I))
+                    for text_elem in all_text_elements:
+                        parent = text_elem.parent
+                        if parent:
+                            # Get the text after "Other Name:"
+                            full_text = parent.get_text(strip=True)
+                            if 'Other Name:' in full_text:
+                                # Extract value after "Other Name:"
+                                match = re.search(r'Other Name:\s*(.+)', full_text, re.I)
+                                if match:
+                                    product_data['also_known_as'] = match.group(1).strip()
+                                    self.logger.info(f"📝 Found also_known_as via text search: {product_data['also_known_as']}")
+                                    break
+                
+                if also_known_elem and not product_data['also_known_as']:
                     value_elem = also_known_elem.find('h2', class_='list-value') or also_known_elem.find('span', class_='value')
                     if value_elem:
                         product_data['also_known_as'] = value_elem.get_text(strip=True)
@@ -1639,7 +2073,48 @@ class AcuraPartsWarehouseScraper(BaseScraper):
             except Exception as e:
                 self.logger.debug(f"Error extracting positions: {str(e)}")
             
-            # Extract fitment data from JSON with comprehensive error handling
+            # Extract "Replaces" field (if present)
+            try:
+                replaces_elem = soup.find('li', class_='replaces')
+                if not replaces_elem:
+                    # Look for text containing "Replaces:" and extract the value after it
+                    all_text_elements = soup.find_all(string=re.compile(r'Replaces:', re.I))
+                    for text_elem in all_text_elements:
+                        parent = text_elem.parent
+                        if parent:
+                            full_text = parent.get_text(strip=True)
+                            if 'Replaces:' in full_text:
+                                match = re.search(r'Replaces:\s*(.+)', full_text, re.I)
+                                if match:
+                                    product_data['replaces'] = match.group(1).strip()
+                                    self.logger.info(f"📝 Found replaces: {product_data['replaces']}")
+                                    break
+                
+                if replaces_elem and not product_data['replaces']:
+                    value_elem = replaces_elem.find('h2', class_='list-value') or replaces_elem.find('span', class_='value')
+                    if value_elem:
+                        product_data['replaces'] = value_elem.get_text(strip=True)
+                    else:
+                        product_data['replaces'] = replaces_elem.get_text(strip=True)
+            except Exception as e:
+                self.logger.debug(f"Error extracting replaces: {str(e)}")
+            
+            # Extract "Applications" field (if present) - often contains fitment summary
+            try:
+                applications_elem = soup.find('li', class_='applications')
+                if not applications_elem:
+                    applications_elem = soup.find('div', class_=re.compile(r'application', re.I))
+                if applications_elem:
+                    value_elem = applications_elem.find('h2', class_='list-value') or applications_elem.find('span', class_='value')
+                    if value_elem:
+                        product_data['applications'] = value_elem.get_text(strip=True)
+                    else:
+                        product_data['applications'] = applications_elem.get_text(strip=True)
+            except Exception as e:
+                self.logger.debug(f"Error extracting applications: {str(e)}")
+            
+            # Extract fitment data - try multiple methods to get ALL fitments
+            # Method 1: Extract from JSON script tags
             try:
                 script_elem = soup.find('script', id='product_data')
                 if not script_elem:
@@ -1649,6 +2124,19 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                         if tag.string and 'fitment' in tag.string.lower():
                             script_elem = tag
                             break
+                
+                # Also try all script tags for JSON-LD or other JSON data
+                if not script_elem:
+                    all_scripts = soup.find_all('script')
+                    for script in all_scripts:
+                        if script.string:
+                            try:
+                                data = json.loads(script.string)
+                                if isinstance(data, dict) and 'fitment' in data:
+                                    script_elem = script
+                                    break
+                            except:
+                                continue
                 
                 if script_elem and script_elem.string:
                     try:
@@ -1682,14 +2170,150 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                                 self.logger.debug(f"Error processing fitment: {str(fitment_error)}")
                                 continue
                         
-                        self.logger.info(f"✅ Extracted {len(product_data['fitments'])} fitment combinations")
+                        self.logger.info(f"✅ Extracted {len(product_data['fitments'])} fitment combinations from JSON")
                         
                     except json.JSONDecodeError as e:
                         self.logger.warning(f"Error parsing JSON: {str(e)}")
                     except Exception as e:
-                        self.logger.warning(f"Error extracting fitments: {str(e)}")
+                        self.logger.warning(f"Error extracting fitments from JSON: {str(e)}")
             except Exception as e:
                 self.logger.debug(f"Error finding fitment script: {str(e)}")
+            
+            # Method 2: Extract from HTML "Fits the following Acura Models:" list
+            if not product_data['fitments']:
+                try:
+                    # Look for "Fits the following" text
+                    fits_text = soup.find(string=re.compile(r'Fits the following.*Models?', re.I))
+                    if fits_text:
+                        # Find the parent container
+                        parent = fits_text.find_parent()
+                        if parent:
+                            # Look for list items (li) or list (ul/ol) containing model information
+                            # Pattern: "TLX 2018-2020" or "MDX 2019-2020"
+                            fitment_list = parent.find_next(['ul', 'ol', 'div'])
+                            if fitment_list:
+                                # Find all list items or divs containing model info
+                                items = fitment_list.find_all(['li', 'div', 'p'])
+                                
+                                for item in items:
+                                    item_text = item.get_text(strip=True)
+                                    if item_text and len(item_text) > 3:
+                                        # Parse pattern like "TLX 2018-2020" or "MDX 2019-2020"
+                                        # Also handle "MDX 2022-2024" format
+                                        match = re.search(r'([A-Z]+(?:\s+[A-Z]+)?)\s+(\d{4})(?:\s*-\s*(\d{4}))?', item_text)
+                                        if match:
+                                            model_name = match.group(1).strip()
+                                            start_year = match.group(2)
+                                            end_year = match.group(3) if match.group(3) else start_year
+                                            
+                                            # Create fitment for each year in range
+                                            try:
+                                                start = int(start_year)
+                                                end = int(end_year)
+                                                for year in range(start, end + 1):
+                                                    product_data['fitments'].append({
+                                                        'year': str(year),
+                                                        'make': 'Acura',
+                                                        'model': model_name,
+                                                        'trim': '',
+                                                        'engine': ''
+                                                    })
+                                            except:
+                                                # If range parsing fails, just use start year
+                                                product_data['fitments'].append({
+                                                    'year': start_year,
+                                                    'make': 'Acura',
+                                                    'model': model_name,
+                                                    'trim': '',
+                                                    'engine': ''
+                                                })
+                                
+                                if product_data['fitments']:
+                                    self.logger.info(f"✅ Extracted {len(product_data['fitments'])} fitment combinations from HTML list")
+                except Exception as e:
+                    self.logger.debug(f"Error extracting fitments from HTML: {str(e)}")
+            
+            # Method 3: Extract from fitment table if present
+            if not product_data['fitments']:
+                try:
+                    fitment_table = soup.find('table', class_=re.compile(r'fitment|compatibility', re.I))
+                    if not fitment_table:
+                        # Look for any table with vehicle information
+                        tables = soup.find_all('table')
+                        for table in tables:
+                            headers = table.find_all(['th', 'td'])
+                            header_text = ' '.join([h.get_text(strip=True) for h in headers[:5]]).lower()
+                            if any(word in header_text for word in ['year', 'make', 'model', 'trim', 'engine']):
+                                fitment_table = table
+                                break
+                    
+                    if fitment_table:
+                        rows = fitment_table.find_all('tr')[1:]  # Skip header row
+                        for row in rows:
+                            cols = row.find_all(['td', 'th'])
+                            if len(cols) >= 3:
+                                year = cols[0].get_text(strip=True) if len(cols) > 0 else ''
+                                make = cols[1].get_text(strip=True) if len(cols) > 1 else 'Acura'
+                                model = cols[2].get_text(strip=True) if len(cols) > 2 else ''
+                                trim = cols[3].get_text(strip=True) if len(cols) > 3 else ''
+                                engine = cols[4].get_text(strip=True) if len(cols) > 4 else ''
+                                
+                                if year and model:
+                                    product_data['fitments'].append({
+                                        'year': year,
+                                        'make': make if make else 'Acura',
+                                        'model': model,
+                                        'trim': trim,
+                                        'engine': engine
+                                    })
+                        
+                        if product_data['fitments']:
+                            self.logger.info(f"✅ Extracted {len(product_data['fitments'])} fitment combinations from table")
+                except Exception as e:
+                    self.logger.debug(f"Error extracting fitments from table: {str(e)}")
+            
+            # Method 4: Extract from product specifications section
+            if not product_data['fitments']:
+                try:
+                    # Look for product specifications section
+                    spec_section = soup.find('div', class_=re.compile(r'product.*spec|specification', re.I))
+                    if not spec_section:
+                        spec_section = soup.find('section', class_=re.compile(r'spec', re.I))
+                    
+                    if spec_section:
+                        # Look for fitment information in specifications
+                        spec_text = spec_section.get_text()
+                        # Pattern: "Fits: 2018-2020 Acura TLX"
+                        fits_match = re.search(r'Fits?:\s*(\d{4}(?:-\d{4})?)\s+([A-Za-z]+)\s+([A-Z]+)', spec_text, re.I)
+                        if fits_match:
+                            year_range = fits_match.group(1)
+                            make = fits_match.group(2)
+                            model = fits_match.group(3)
+                            
+                            # Parse year range
+                            if '-' in year_range:
+                                start_year, end_year = year_range.split('-')
+                                for year in range(int(start_year), int(end_year) + 1):
+                                    product_data['fitments'].append({
+                                        'year': str(year),
+                                        'make': make,
+                                        'model': model,
+                                        'trim': '',
+                                        'engine': ''
+                                    })
+                            else:
+                                product_data['fitments'].append({
+                                    'year': year_range,
+                                    'make': make,
+                                    'model': model,
+                                    'trim': '',
+                                    'engine': ''
+                                })
+                            
+                            if product_data['fitments']:
+                                self.logger.info(f"✅ Extracted {len(product_data['fitments'])} fitment combinations from specifications")
+                except Exception as e:
+                    self.logger.debug(f"Error extracting fitments from specifications: {str(e)}")
             
             # If no fitments found, still return the product with empty fitment
             if not product_data['fitments']:
@@ -1701,6 +2325,8 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                     'trim': '',
                     'engine': ''
                 })
+            else:
+                self.logger.info(f"✅ Total fitments extracted: {len(product_data['fitments'])}")
             
             self.logger.info(f"✅ Successfully scraped: {product_data['title']}")
             return product_data

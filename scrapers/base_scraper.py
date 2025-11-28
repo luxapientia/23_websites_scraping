@@ -829,12 +829,31 @@ class BaseScraper(ABC):
             'Wheel Set',
             'Wheel Assembly',
             'Wheel Rim',
+            'wheel rim',  # Lowercase version
             'complete wheel',
             'OEM Kia wheel',
             'OEM wheel',
             '19 inch Kia wheel',
             'wheel disc',
-            'rim cap'             
+            'rim cap',
+            # Additional wheel-related terms found on AcuraPartsWarehouse
+            'disk',  # For "Acura Disk (18X8J)" products
+            'Disk',  # Capitalized version
+            'wheel disk',  # Combined term
+            'aluminum wheel rim',  # Full phrase
+            'alloy wheel rim',  # Full phrase
+            'wheel rim assembly',  # Assembly variants
+            'wheel assembly',  # Lowercase version
+            'spare wheel',  # Spare wheels
+            'spare wheel rim',  # Spare wheel rim
+            'berlina black',  # Specific wheel finish (often with wheels)
+            'black alloy wheel',  # Black finish wheels
+            'alloy wheels',  # Plural form
+            'alloy wheel',  # Already there but ensure it's clear
+            'wheel rim',  # Ensure lowercase version
+            'rims',  # Plural form
+            'wheels',  # Plural form
+                       
     ]
     
     # Keywords to EXCLUDE (not wheels) - Be very specific to avoid false positives
