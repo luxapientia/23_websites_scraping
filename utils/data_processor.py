@@ -109,19 +109,8 @@ class DataProcessor:
                 # This means multiple rows for each part number
                 fitments = product.get('fitments', [])
                 
-                if not fitments:
-                    # If no fitment data, create one row with empty fitment fields
-                    row = base_data.copy()
-                    row.update({
-                        'year': '',
-                        'make': '',
-                        'model': '',
-                        'trims': '',
-                        'engines': ''
-                    })
-                    rows.append(row)
-                else:
-                    # Create multiple rows for each fitment
+                if fitments:
+                    # Create multiple rows for each fitment (legacy format)
                     for fitment in fitments:
                         row = base_data.copy()
                         row.update({
@@ -132,6 +121,28 @@ class DataProcessor:
                             'engines': fitment.get('engine', '')
                         })
                         rows.append(row)
+                elif 'year' in product or 'make' in product:
+                    # Fitment data already flattened in product (new format)
+                    row = base_data.copy()
+                    row.update({
+                        'year': str(product.get('year', '')),
+                        'make': product.get('make', ''),
+                        'model': product.get('model', ''),
+                        'trims': product.get('trim', ''),
+                        'engines': product.get('engine', '')
+                    })
+                    rows.append(row)
+                else:
+                    # If no fitment data, create one row with empty fitment fields
+                    row = base_data.copy()
+                    row.update({
+                        'year': '',
+                        'make': '',
+                        'model': '',
+                        'trims': '',
+                        'engines': ''
+                    })
+                    rows.append(row)
                 
             except Exception as e:
                 self.logger.error(f"Error processing product: {str(e)}")

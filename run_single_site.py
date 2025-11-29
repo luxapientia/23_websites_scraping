@@ -149,8 +149,13 @@ def main():
                 product_data = scraper.scrape_product(url)
                 
                 if product_data:
-                    products.append(product_data)
-                    logger.info(f"[{idx}/{len(product_urls)}] ✓ {product_data.get('title', 'Unknown')[:50]}")
+                    if isinstance(product_data, list):
+                        products.extend(product_data)
+                        title = product_data[0].get('title', 'Unknown') if product_data else 'Unknown'
+                    else:
+                        products.append(product_data)
+                        title = product_data.get('title', 'Unknown')
+                    logger.info(f"[{idx}/{len(product_urls)}] ✓ {title[:50]}")
                 else:
                     logger.info(f"[{idx}/{len(product_urls)}] ✗ Skipped")
                 

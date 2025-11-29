@@ -8,6 +8,7 @@ import time
 
 # Import scrapers
 from scrapers.tascaparts_scraper import TascaPartsScraper
+from scrapers.acurapartswarehouse_scraper import AcuraPartsWarehouseScraper
 from scrapers.generic_scraper import GenericScraper
 
 # Import utilities
@@ -57,8 +58,8 @@ def create_scraper(site_config):
     if site_name == 'tascaparts':
         return TascaPartsScraper()
     # Add more specific scrapers here as implemented
-    # elif site_name == 'acuraparts':
-    #     return AcuraPartsScraper()
+    elif site_name == 'acuraparts':
+        return AcuraPartsWarehouseScraper()
     else:
         # Use generic scraper for most sites
         return GenericScraper(site_config)
@@ -111,8 +112,13 @@ def scrape_site(site_config, logger, delay_between_products=3):
                 product_data = scraper.scrape_product(url)
                 
                 if product_data:
-                    products.append(product_data)
-                    logger.info(f"[{idx}/{len(product_urls)}] ✓ {product_data.get('title', 'Unknown')[:50]}")
+                    if isinstance(product_data, list):
+                        products.extend(product_data)
+                        title = product_data[0].get('title', 'Unknown') if product_data else 'Unknown'
+                    else:
+                        products.append(product_data)
+                        title = product_data.get('title', 'Unknown')
+                    logger.info(f"[{idx}/{len(product_urls)}] ✓ {title[:50]}")
                 else:
                     logger.info(f"[{idx}/{len(product_urls)}] ✗ Skipped (not a wheel or error)")
                 
