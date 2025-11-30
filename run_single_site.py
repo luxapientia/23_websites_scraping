@@ -8,6 +8,7 @@ from datetime import datetime
 
 from scrapers.tascaparts_scraper import TascaPartsScraper
 from scrapers.acurapartswarehouse_scraper import AcuraPartsWarehouseScraper
+from scrapers.moparonlineparts_scraper import MoparOnlinePartsScraper
 from scrapers.generic_scraper import GenericScraper
 from utils.data_processor import DataProcessor
 from utils.excel_exporter import ExcelExporter
@@ -67,6 +68,8 @@ def create_scraper(site_config):
         return TascaPartsScraper()
     elif site_name == 'acuraparts':
         return AcuraPartsWarehouseScraper()
+    elif site_name == 'moparonline':
+        return MoparOnlinePartsScraper()
     else:
         return GenericScraper(site_config)
 
@@ -80,6 +83,7 @@ def main():
         print("\nAvailable sites:")
         print("  - tascaparts")
         print("  - acuraparts")
+        print("  - moparonline")
         print("  - honda")
         print("  - ford")
         print("  - toyota")
@@ -87,6 +91,7 @@ def main():
         print("\nExample:")
         print("  python run_single_site.py tascaparts")
         print("  python run_single_site.py acuraparts")
+        print("  python run_single_site.py moparonline")
         sys.exit(1)
     
     site_name = sys.argv[1]
@@ -144,7 +149,7 @@ def main():
         from tqdm import tqdm
         import time
         
-        for idx, url in enumerate(tqdm(product_urls, desc=f"Scraping {site_name}"), 1):
+        for idx, url in enumerate(tqdm(product_urls, desc=f"Scraping {site_name}"), start=1):
             try:
                 product_data = scraper.scrape_product(url)
                 

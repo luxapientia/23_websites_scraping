@@ -60,13 +60,77 @@ class BaseScraper(ABC):
         # Create logs directory if it doesn't exist
         os.makedirs('logs', exist_ok=True)
         
-        # Setup logging
-        logging.basicConfig(
-            filename=f'logs/{site_name}_{datetime.now().strftime("%Y%m%d")}.log',
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s'
-        )
+        # Setup logging with UTF-8 encoding to handle emojis
+        log_file = f'logs/{site_name}_{datetime.now().strftime("%Y%m%d")}.log'
+        
+        # Create logger
         self.logger = logging.getLogger(site_name)
+        self.logger.setLevel(logging.INFO)
+        
+        # Remove existing handlers to avoid duplicates
+        self.logger.handlers = []
+        
+        # File handler with UTF-8 encoding
+        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+        file_handler.setLevel(logging.INFO)
+        file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        file_handler.setFormatter(file_formatter)
+        self.logger.addHandler(file_handler)
+        
+        # Console handler with safe Unicode handling
+        # Define SafeUnicodeHandler class outside to avoid redefinition issues
+        class SafeUnicodeHandler(logging.StreamHandler):
+            """StreamHandler that safely handles Unicode encoding errors"""
+            def emit(self, record):
+                try:
+                    # Try normal emit first
+                    msg = self.format(record)
+                    stream = self.stream
+                    # Try to write directly
+                    try:
+                        stream.write(msg + self.terminator)
+                        self.flush()
+                    except UnicodeEncodeError:
+                        # Replace emojis with plain text alternatives
+                        safe_msg = msg
+                        safe_msg = safe_msg.replace('🔍', '[SEARCH]')
+                        safe_msg = safe_msg.replace('✅', '[OK]')
+                        safe_msg = safe_msg.replace('❌', '[X]')
+                        safe_msg = safe_msg.replace('💰', '[PRICE]')
+                        safe_msg = safe_msg.replace('🛡️', '[SHIELD]')
+                        safe_msg = safe_msg.replace('⏳', '[WAIT]')
+                        safe_msg = safe_msg.replace('🔄', '[RETRY]')
+                        safe_msg = safe_msg.replace('📝', '[NOTE]')
+                        safe_msg = safe_msg.replace('📦', '[BOX]')
+                        safe_msg = safe_msg.replace('⚠️', '[WARN]')
+                        safe_msg = safe_msg.replace('✓', '[OK]')
+                        safe_msg = safe_msg.replace('⏭️', '[SKIP]')
+                        try:
+                            stream.write(safe_msg + self.terminator)
+                            self.flush()
+                        except UnicodeEncodeError:
+                            # Last resort: encode with errors='replace'
+                            encoding = getattr(stream, 'encoding', 'utf-8') or 'utf-8'
+                            try:
+                                safe_bytes = safe_msg.encode(encoding, errors='replace')
+                                stream.write(safe_bytes.decode(encoding, errors='replace') + self.terminator)
+                            except:
+                                # Ultimate fallback: remove all non-ASCII
+                                ascii_msg = ''.join(c if ord(c) < 128 else '?' for c in safe_msg)
+                                stream.write(ascii_msg + self.terminator)
+                            self.flush()
+                except Exception:
+                    # Silently ignore logging errors to prevent crashes
+                    self.handleError(record)
+        
+        safe_console_handler = SafeUnicodeHandler(sys.stdout)
+        safe_console_handler.setLevel(logging.INFO)
+        console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        safe_console_handler.setFormatter(console_formatter)
+        self.logger.addHandler(safe_console_handler)
+        
+        # Prevent propagation to root logger to avoid duplicate messages
+        self.logger.propagate = False
         
         # Initialize error handler
         self.error_handler = ErrorHandler(self.logger)
@@ -152,7 +216,7 @@ class BaseScraper(ABC):
             
             # Create undetected ChromeDriver with stealth settings
             # IMPORTANT: Using uc.Chrome() from undetected_chromedriver, NOT selenium.webdriver.Chrome()
-            # use_subprocess=True helps avoid detection by running Chrome in a subprocess
+            # undetected_chromedriver automatically handles Cloudflare challenges
             max_retries = 2
             retry_count = 0
             driver_initialized = False
@@ -162,7 +226,7 @@ class BaseScraper(ABC):
                     if driver_executable_path and os.path.exists(driver_executable_path):
                         # Use local ChromeDriver to avoid network timeout
                         self.logger.info(f"Using local ChromeDriver with undetected_chromedriver: {driver_executable_path}")
-                        # uc.Chrome() is from undetected_chromedriver module - provides anti-detection
+                        # uc.Chrome() automatically bypasses Cloudflare - let it handle challenges naturally
                         self.driver = uc.Chrome(
                             options=options, 
                             version_main=None,  # Auto-detect Chrome version
@@ -173,7 +237,7 @@ class BaseScraper(ABC):
                     else:
                         # No local ChromeDriver, try auto-download
                         self.logger.info("No local ChromeDriver found, attempting auto-download with undetected_chromedriver...")
-                        # uc.Chrome() is from undetected_chromedriver module - provides anti-detection
+                        # uc.Chrome() automatically bypasses Cloudflare - let it handle challenges naturally
                         self.driver = uc.Chrome(
                             options=options, 
                             version_main=None,  # Auto-detect Chrome version
@@ -211,11 +275,12 @@ class BaseScraper(ABC):
                         self.logger.error(f"Failed to initialize ChromeDriver: {str(e)}")
                         raise
             
-            # Set timeouts - optimized for faster fetching
-            self.page_load_timeout = 30  # Store timeout value
-            self.driver.set_page_load_timeout(30)  # Optimized: reduced from 90 to 30 seconds
-            self.driver.implicitly_wait(2)  # Optimized: reduced from 15 to 2 seconds for element finding
-            self.driver.set_script_timeout(10)  # Optimized: reduced from 60 to 10 seconds for JavaScript execution
+            # Set timeouts - increased to allow undetected_chromedriver to handle Cloudflare
+            # undetected_chromedriver needs more time to automatically bypass Cloudflare challenges
+            self.page_load_timeout = 60  # Increased from 30 to 60 seconds for Cloudflare bypass
+            self.driver.set_page_load_timeout(60)  # Increased to allow Cloudflare challenge completion
+            self.driver.implicitly_wait(5)  # Increased from 2 to 5 seconds for element finding
+            self.driver.set_script_timeout(30)  # Increased from 10 to 30 seconds for JavaScript execution (Cloudflare uses JS)
             
             # Additional anti-detection scripts - Enhanced
             self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
@@ -417,6 +482,10 @@ class BaseScraper(ABC):
                 strict_challenge_indicators = [
                     "just a moment",  # Must be exact match
                     "checking your browser",  # Must be exact match
+                    "verifying you are human",  # New indicator from image
+                    "review the security of your connection",  # New indicator from image
+                    "verifying...",  # Loading state indicator
+                    "this may take a few seconds",  # Time indicator
                 ]
                 
                 # Check for strict indicators
@@ -452,16 +521,41 @@ class BaseScraper(ABC):
                 if len(page_source) < 5000:
                     try:
                         from selenium.webdriver.common.by import By
-                        challenge_elements = self.driver.find_elements(By.CSS_SELECTOR, 
-                            ".cf-browser-verification, .challenge-container")
-                        if challenge_elements:
-                            # Check if any are visible AND page is small
-                            for elem in challenge_elements:
-                                try:
-                                    if elem.is_displayed() and len(page_source) < 3000:
-                                        return True
-                                except:
-                                    continue
+                        # Check for multiple Cloudflare challenge selectors
+                        challenge_selectors = [
+                            ".cf-browser-verification",
+                            ".challenge-container",
+                            "#challenge-form",
+                            "form[action*='challenge']",
+                            "[data-ray]",
+                            ".cf-im-under-attack",
+                            ".cf-wrapper",
+                            "div:contains('Verifying')",
+                            "div:contains('verifying')"
+                        ]
+                        
+                        for selector in challenge_selectors:
+                            try:
+                                challenge_elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                                if challenge_elements:
+                                    # Check if any are visible AND page is small
+                                    for elem in challenge_elements:
+                                        try:
+                                            if elem.is_displayed() and len(page_source) < 3000:
+                                                return True
+                                        except:
+                                            continue
+                            except:
+                                continue
+                        
+                        # Also check for text content that indicates verification
+                        try:
+                            page_text = self.driver.find_element(By.TAG_NAME, "body").text.lower()
+                            if any(indicator in page_text for indicator in ["verifying", "review the security", "this may take"]):
+                                if len(page_source) < 5000:
+                                    return True
+                        except:
+                            pass
                     except:
                         pass
                 
@@ -478,15 +572,14 @@ class BaseScraper(ABC):
     
     def wait_for_cloudflare(self, timeout=30, target_url=None, max_retries=1):
         """
-        Wait for Cloudflare challenge to complete - OPTIMIZED FAST VERSION
+        Wait for Cloudflare challenge to complete - ENHANCED VERSION
         
-        Optimized for speed: Simple check every 1-2 seconds, exits as soon as page is accessible.
-        Based on successful approach from jiji_service.py (4 seconds average).
+        Enhanced with better detection, human-like behavior, and more retry strategies.
         
         Args:
-            timeout: Maximum time to wait in seconds per attempt (optimized: 30s)
+            timeout: Maximum time to wait in seconds per attempt (default: 30s, can be increased to 60s)
             target_url: Expected URL to verify we're on the correct site
-            max_retries: Maximum number of retries if Cloudflare bypass fails (optimized: 1)
+            max_retries: Maximum number of retries if Cloudflare bypass fails (default: 1, can be increased to 3)
             
         Returns:
             bool: True if Cloudflare challenge was bypassed and we're on correct site, False otherwise
@@ -494,36 +587,119 @@ class BaseScraper(ABC):
         if not self.driver:
             return False
         
-        self.logger.info(f"⏳ Cloudflare challenge detected - waiting up to {timeout}s (optimized for speed)...")
+        self.logger.info(f"⏳ Cloudflare challenge detected - waiting up to {timeout}s per attempt (max {max_retries + 1} attempts)...")
         start_time = time.time()
-        check_interval = 1.5  # Check every 1.5 seconds (faster than before)
+        check_interval = 2.0  # Check every 2 seconds (more human-like)
         retry_count = 0
         import random
         
-        # Initial brief wait for Cloudflare to start processing
-        time.sleep(2)  # Reduced from 5s
+        # Initial wait for Cloudflare to start processing (increased for better success)
+        # For "Verifying you are human" challenges, they can take longer
+        initial_wait = random.uniform(5, 8)  # Increased from 3-5s to 5-8s
+        self.logger.info(f"⏳ Initial wait: {initial_wait:.1f}s for Cloudflare to start...")
+        time.sleep(initial_wait)
+        
+        # Simulate human behavior during initial wait
+        try:
+            self.simulate_human_behavior()
+        except:
+            pass
         
         while retry_count <= max_retries:
             attempt_start = time.time()
             
             while time.time() - attempt_start < timeout:
                 try:
-                    # FAST CHECK: Simple page source check (like jiji_service.py)
+                    # Simulate human behavior while waiting (helps bypass detection)
+                    if random.random() < 0.4:  # 40% chance to simulate activity (increased from 30%)
+                        try:
+                            # Small random scroll
+                            self.driver.execute_script(f"window.scrollBy(0, {random.randint(10, 50)});")
+                            time.sleep(random.uniform(0.3, 0.8))
+                        except:
+                            pass
+                    
+                    # Check for "Verifying..." element disappearing (specific to this challenge type)
+                    try:
+                        from selenium.webdriver.common.by import By
+                        verifying_elements = self.driver.find_elements(By.XPATH, 
+                            "//*[contains(text(), 'Verifying') or contains(text(), 'verifying')]")
+                        if verifying_elements:
+                            # Check if any are still visible
+                            still_verifying = False
+                            for elem in verifying_elements:
+                                try:
+                                    if elem.is_displayed():
+                                        still_verifying = True
+                                        break
+                                except:
+                                    continue
+                            
+                            # If "Verifying..." is gone, challenge might be complete
+                            if not still_verifying:
+                                self.logger.info("✓ 'Verifying...' element disappeared - challenge may be complete")
+                                time.sleep(2)  # Wait a bit more for page to load
+                    except:
+                        pass
+                    
+                    # Check page source and URL
                     page_source = self.driver.page_source
                     current_url = self.driver.current_url.lower()
                     
-                    # Quick check: If we're on Cloudflare challenge URL, definitely blocked
+                    # Check if we're still on Cloudflare challenge URL
                     if 'challenges.cloudflare.com' in current_url or '/cdn-cgi/challenge' in current_url:
                         # Still on challenge page, continue waiting
                         pass
                     else:
                         # Not on challenge URL - check if challenge indicators are gone
-                        page_preview = page_source[:2000].lower()
-                        has_challenge_text = ("just a moment" in page_preview or "checking your browser" in page_preview)
+                        page_preview = page_source[:10000].lower()  # Check more content (increased from 5000)
+                        has_challenge_text = (
+                            "just a moment" in page_preview or 
+                            "checking your browser" in page_preview or
+                            "verifying you are human" in page_preview or
+                            "review the security of your connection" in page_preview or
+                            "verifying..." in page_preview or
+                            "this may take a few seconds" in page_preview or
+                            "ddos protection" in page_preview or
+                            "ray id" in page_preview or
+                            "cf-browser-verification" in page_preview
+                        )
                         
-                        # If no challenge text AND we have substantial content, we're good
-                        if not has_challenge_text and len(page_source) > 5000:
-                            # Simple domain check if target URL provided
+                        # Also check for challenge elements in DOM
+                        try:
+                            from selenium.webdriver.common.by import By
+                            challenge_elements = self.driver.find_elements(By.CSS_SELECTOR, 
+                                ".cf-browser-verification, .challenge-container, #challenge-form, [data-ray]")
+                            if challenge_elements:
+                                for elem in challenge_elements:
+                                    try:
+                                        if elem.is_displayed():
+                                            has_challenge_text = True
+                                            break
+                                    except:
+                                        continue
+                        except:
+                            pass
+                        
+                        # Enhanced check: If no challenge text AND we have substantial content, we're good
+                        # Also check that "Verifying..." elements are gone
+                        verifying_gone = True
+                        try:
+                            from selenium.webdriver.common.by import By
+                            verifying_elements_check = self.driver.find_elements(By.XPATH, 
+                                "//*[contains(text(), 'Verifying') or contains(text(), 'verifying')]")
+                            for elem in verifying_elements_check:
+                                try:
+                                    if elem.is_displayed():
+                                        verifying_gone = False
+                                        break
+                                except:
+                                    continue
+                        except:
+                            pass
+                        
+                        if not has_challenge_text and len(page_source) > 8000 and verifying_gone:  # Increased threshold
+                            # Domain check if target URL provided
                             on_target = True
                             if target_url:
                                 try:
@@ -532,16 +708,21 @@ class BaseScraper(ABC):
                                     on_target = target_domain == current_domain or target_domain in current_domain
                                 except:
                                     # Simple fallback check
-                                    target_domain = target_url.split('//')[1].split('/')[0].split(':')[0].lower().replace('www.', '')
-                                    on_target = target_domain in current_url.replace('www.', '')
+                                    try:
+                                        target_domain = target_url.split('//')[1].split('/')[0].split(':')[0].lower().replace('www.', '')
+                                        on_target = target_domain in current_url.replace('www.', '')
+                                    except:
+                                        on_target = True  # If we can't parse, assume we're on target
                             
                             if on_target:
                                 elapsed = time.time() - start_time
                                 self.logger.info(f"✅ Cloudflare bypassed successfully! (took {elapsed:.1f}s)")
+                                # Additional wait for page to fully stabilize
+                                time.sleep(random.uniform(2, 3))  # Increased from 1-2s to 2-3s
                                 return True
                     
-                    # Brief wait before next check
-                    time.sleep(check_interval)
+                    # Wait before next check (with some randomness)
+                    time.sleep(check_interval + random.uniform(-0.3, 0.3))
                     
                 except Exception as e:
                     self.logger.debug(f"Error while waiting for Cloudflare: {str(e)}")
@@ -554,32 +735,72 @@ class BaseScraper(ABC):
             if retry_count <= max_retries:
                 self.logger.warning(f"⚠️ Cloudflare timeout after {elapsed:.1f}s (attempt {retry_count}/{max_retries + 1})")
                 
-                # Simple retry: Just refresh and wait again
+                # Enhanced retry strategy: Navigate to target URL instead of just refreshing
                 try:
                     if target_url:
+                        self.logger.info(f"🔄 Retrying: Navigating to {target_url}...")
+                        # Try navigating to target URL again (sometimes works better than refresh)
+                        self.driver.get(target_url)
+                        time.sleep(random.uniform(3, 5))  # Wait after navigation
+                        
+                        # Simulate human behavior
+                        self.simulate_human_behavior()
+                        time.sleep(random.uniform(1, 2))
+                    else:
                         self.logger.info("🔄 Refreshing page...")
                         self.driver.refresh()
-                        time.sleep(3)  # Brief wait after refresh
-                    else:
+                        time.sleep(random.uniform(3, 5))
+                except Exception as retry_error:
+                    self.logger.debug(f"Retry navigation error: {str(retry_error)}")
+                    # Fallback to refresh
+                    try:
                         self.driver.refresh()
-                        time.sleep(3)
-                except Exception as refresh_error:
-                    self.logger.debug(f"Refresh error: {str(refresh_error)}")
+                        time.sleep(random.uniform(3, 5))
+                    except:
+                        pass
             else:
-                # All retries exhausted - final check
+                # All retries exhausted - final comprehensive check
                 total_elapsed = time.time() - start_time
                 try:
                     page_source_final = self.driver.page_source
                     current_url_final = self.driver.current_url.lower()
-                    # If page has content and not on Cloudflare URL, consider accessible
-                    if len(page_source_final) > 5000 and 'challenges.cloudflare.com' not in current_url_final:
-                        if "just a moment" not in page_source_final[:2000].lower() and "checking your browser" not in page_source_final[:2000].lower():
-                            self.logger.info(f"✅ Page accessible (final check) - continuing... (took {total_elapsed:.1f}s)")
-                            return True
+                    
+                    # Comprehensive final check - include all challenge indicators
+                    page_preview_final = page_source_final[:10000].lower()  # Check more content
+                    has_challenge_final = (
+                        'challenges.cloudflare.com' in current_url_final or
+                        "just a moment" in page_preview_final or
+                        "checking your browser" in page_preview_final or
+                        "verifying you are human" in page_preview_final or
+                        "review the security of your connection" in page_preview_final or
+                        "verifying..." in page_preview_final or
+                        "this may take a few seconds" in page_preview_final
+                    )
+                    
+                    # Also check for challenge elements in DOM
+                    try:
+                        from selenium.webdriver.common.by import By
+                        challenge_elements_final = self.driver.find_elements(By.CSS_SELECTOR, 
+                            ".cf-browser-verification, .challenge-container, #challenge-form, [data-ray]")
+                        if challenge_elements_final:
+                            for elem in challenge_elements_final:
+                                try:
+                                    if elem.is_displayed():
+                                        has_challenge_final = True
+                                        break
+                                except:
+                                    continue
+                    except:
+                        pass
+                    
+                    # If page has substantial content and no challenge indicators, consider accessible
+                    if len(page_source_final) > 8000 and not has_challenge_final:
+                        self.logger.info(f"✅ Page accessible (final check) - continuing... (took {total_elapsed:.1f}s)")
+                        return True
                 except:
                     pass
                 
-                self.logger.warning(f"⚠️ Cloudflare challenge timeout after {total_elapsed:.1f}s")
+                self.logger.warning(f"⚠️ Cloudflare challenge timeout after {total_elapsed:.1f}s (all {max_retries + 1} attempts exhausted)")
                 return False
         
         return False
@@ -614,25 +835,84 @@ class BaseScraper(ABC):
                         current_url_check = current_url
                         page_preview = self.driver.page_source[:6000]
                         
-                        # Only check Cloudflare if on challenge URL or page is suspiciously small
-                        if ('challenges.cloudflare.com' in current_url_check or '/cdn-cgi/challenge' in current_url_check or len(page_preview) < 5000) and self.has_cloudflare_challenge():
-                            self.logger.info("🛡️ Cloudflare challenge detected - waiting for bypass...")
-                            cloudflare_bypassed = self.wait_for_cloudflare(timeout=30, target_url=url, max_retries=1)
-                            if not cloudflare_bypassed:
-                                # Quick final check - if page has content, continue anyway
-                                if len(self.driver.page_source) > 5000 and 'challenges.cloudflare.com' not in self.driver.current_url.lower():
-                                    self.logger.info("✓ Page accessible despite Cloudflare warning - continuing...")
-                                else:
+                        # undetected_chromedriver handles Cloudflare automatically
+                        # Wait a bit longer to let it complete the challenge
+                        time.sleep(random.uniform(2, 4))  # Initial wait for page to start loading
+                        
+                        # Check if we're on a Cloudflare challenge page
+                        current_url_after_wait = self.driver.current_url.lower()
+                        page_preview_after_wait = self.driver.page_source[:10000] if len(self.driver.page_source) > 10000 else self.driver.page_source
+                        
+                        # Only check for Cloudflare if we're definitely on a challenge page
+                        is_challenge_page = (
+                            'challenges.cloudflare.com' in current_url_after_wait or 
+                            '/cdn-cgi/challenge' in current_url_after_wait or
+                            (len(page_preview_after_wait) < 5000 and self.has_cloudflare_challenge())
+                        )
+                        
+                        if is_challenge_page:
+                            self.logger.info("🛡️ Cloudflare challenge detected - waiting for undetected_chromedriver to handle it...")
+                            
+                            # undetected_chromedriver should handle this automatically, but we need to wait
+                            # Give it plenty of time (up to 60 seconds total)
+                            max_wait_time = 60
+                            waited = 0
+                            check_interval = 3
+                            
+                            while waited < max_wait_time:
+                                time.sleep(check_interval)
+                                waited += check_interval
+                                
+                                # Check current state
+                                current_url_check = self.driver.current_url.lower()
+                                page_source_check = self.driver.page_source
+                                page_preview_check = page_source_check[:10000].lower() if len(page_source_check) > 10000 else page_source_check.lower()
+                                
+                                # Check if challenge is gone
+                                still_on_challenge = (
+                                    'challenges.cloudflare.com' in current_url_check or
+                                    '/cdn-cgi/challenge' in current_url_check or
+                                    "verifying you are human" in page_preview_check or
+                                    "review the security of your connection" in page_preview_check or
+                                    "verifying..." in page_preview_check or
+                                    (len(page_source_check) < 5000 and self.has_cloudflare_challenge())
+                                )
+                                
+                                if not still_on_challenge and len(page_source_check) > 8000:
+                                    # Challenge passed!
+                                    self.logger.info(f"✅ Cloudflare bypassed by undetected_chromedriver! (waited {waited}s)")
+                                    time.sleep(random.uniform(1, 2))  # Brief stabilization
+                                    break
+                                
+                                if waited % 10 == 0:  # Log every 10 seconds
+                                    self.logger.info(f"⏳ Still waiting for Cloudflare bypass... ({waited}s/{max_wait_time}s)")
+                            
+                            # Final check - if still on challenge, use manual bypass
+                            final_url = self.driver.current_url.lower()
+                            final_page = self.driver.page_source
+                            still_challenged = (
+                                'challenges.cloudflare.com' in final_url or
+                                '/cdn-cgi/challenge' in final_url or
+                                (len(final_page) < 5000 and self.has_cloudflare_challenge())
+                            )
+                            
+                            if still_challenged:
+                                self.logger.warning("⚠️ Cloudflare still present after wait - using manual bypass...")
+                                cloudflare_bypassed = self.wait_for_cloudflare(timeout=60, target_url=url, max_retries=2)
+                                if not cloudflare_bypassed:
                                     retry_count += 1
                                     if retry_count < max_retries:
-                                        import random
                                         delay = random.uniform(10, 15)
                                         self.logger.warning(f"Retrying page load in {delay:.1f}s...")
                                         time.sleep(delay)
                                         continue
                                     else:
                                         return None
-                            time.sleep(1)  # Brief wait after bypass
+                            else:
+                                self.logger.info("✓ Cloudflare bypassed successfully!")
+                        else:
+                            # Not on challenge page, continue normally
+                            pass
                         
                         # Wait time for page to stabilize (increased for more human-like behavior)
                         import random
@@ -660,8 +940,30 @@ class BaseScraper(ABC):
                         
                         return html
                     except TimeoutException as e:
-                        # Handle timeout - wait longer for FULL content instead of accepting partial
+                        # Handle timeout - check for Cloudflare first, then wait for content
                         recovery = self.error_handler.handle_error(e, retry_count, {'url': url})
+                        
+                        # IMPORTANT: Check for Cloudflare when timeout occurs (Cloudflare might be causing the timeout)
+                        try:
+                            current_url_check = self.driver.current_url.lower()
+                            page_preview = self.driver.page_source[:6000] if self.driver.page_source else ''
+                            
+                            # Check if we're on Cloudflare challenge page
+                            if ('challenges.cloudflare.com' in current_url_check or '/cdn-cgi/challenge' in current_url_check or len(page_preview) < 5000) and self.has_cloudflare_challenge():
+                                self.logger.info("🛡️ Cloudflare challenge detected during timeout - waiting for bypass...")
+                                # Increased timeout to 60s for "Verifying you are human" challenges
+                                cloudflare_bypassed = self.wait_for_cloudflare(timeout=60, target_url=url, max_retries=2)
+                                if cloudflare_bypassed:
+                                    # Cloudflare bypassed, now get the page content
+                                    time.sleep(random.uniform(1, 2))
+                                    html = self.driver.page_source
+                                    if html and len(html) > 5000:
+                                        self.health_status['successful_requests'] += 1
+                                        self.health_status['consecutive_failures'] = 0
+                                        self.health_status['last_success_time'] = datetime.now()
+                                        return html
+                        except Exception as cf_check_error:
+                            self.logger.debug(f"Error checking Cloudflare during timeout: {str(cf_check_error)}")
                         
                         # Don't accept partial content - wait for full content
                         self.logger.warning(f"⚠️ Page load timeout - waiting longer for FULL content...")
@@ -1008,9 +1310,44 @@ class BaseScraper(ABC):
             if attribute:
                 return elem.get(attribute, default)
             else:
-                return elem.get_text(strip=True)
+                text = elem.get_text(strip=True)
+                # Ensure text is safe for logging and storage
+                try:
+                    # Try to encode/decode to ensure it's valid Unicode
+                    text.encode('utf-8')
+                    return text
+                except UnicodeEncodeError:
+                    # Replace problematic characters
+                    return text.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
         except Exception as e:
             self.logger.warning(f"Error extracting text: {str(e)}")
+            return default
+    
+    def safe_str(self, value, default=''):
+        """
+        Safely convert value to string, handling Unicode encoding issues
+        
+        Args:
+            value: Value to convert to string
+            default: Default value if conversion fails
+        
+        Returns:
+            str: Safe string representation
+        """
+        try:
+            if value is None:
+                return default
+            str_value = str(value)
+            # Ensure it can be encoded
+            str_value.encode('utf-8')
+            return str_value
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            # Replace problematic characters
+            try:
+                return str(value).encode('utf-8', errors='replace').decode('utf-8', errors='replace')
+            except:
+                return default
+        except Exception:
             return default
     
     @abstractmethod
