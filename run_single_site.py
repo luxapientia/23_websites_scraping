@@ -9,6 +9,7 @@ from datetime import datetime
 from scrapers.tascaparts_scraper import TascaPartsScraper
 from scrapers.acurapartswarehouse_scraper import AcuraPartsWarehouseScraper
 from scrapers.moparonlineparts_scraper import MoparOnlinePartsScraper
+from scrapers.scuderiacarparts_scraper import ScuderiaCarPartsScraper
 from scrapers.generic_scraper import GenericScraper
 from utils.data_processor import DataProcessor
 from utils.excel_exporter import ExcelExporter
@@ -70,6 +71,8 @@ def create_scraper(site_config):
         return AcuraPartsWarehouseScraper()
     elif site_name == 'moparonline':
         return MoparOnlinePartsScraper()
+    elif site_name == 'scuderiacarparts':
+        return ScuderiaCarPartsScraper()
     else:
         return GenericScraper(site_config)
 
@@ -84,6 +87,7 @@ def main():
         print("  - tascaparts")
         print("  - acuraparts")
         print("  - moparonline")
+        print("  - scuderiacarparts")
         print("  - honda")
         print("  - ford")
         print("  - toyota")
@@ -92,6 +96,7 @@ def main():
         print("  python run_single_site.py tascaparts")
         print("  python run_single_site.py acuraparts")
         print("  python run_single_site.py moparonline")
+        print("  python run_single_site.py scuderiacarparts")
         sys.exit(1)
     
     site_name = sys.argv[1]

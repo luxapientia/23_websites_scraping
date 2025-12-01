@@ -594,7 +594,7 @@ class MoparOnlinePartsScraper(BaseScraper):
                         if still_challenged:
                             self.logger.warning("⚠️ Cloudflare still present after wait - using manual bypass...")
                             cloudflare_bypassed = self.wait_for_cloudflare(timeout=60, target_url=url, max_retries=2)
-                            if not cloudflare_bypassed:
+                        if not cloudflare_bypassed:
                                 retry_count += 1
                                 if retry_count < max_retries:
                                     wait_time = random.uniform(10, 15)
@@ -643,7 +643,8 @@ class MoparOnlinePartsScraper(BaseScraper):
                     
                     # If it looks like a category page, skip it
                     if has_category_elements and not has_product_elements:
-                        self.logger.warning(f"⚠️ URL appears to be a category/listing page, not a product page: {url}")
+                        safe_url = self.safe_str(url)
+                        self.logger.warning(f"⚠️ URL appears to be a category/listing page, not a product page: {safe_url}")
                         return None
                     
                     # Extract title
@@ -660,9 +661,9 @@ class MoparOnlinePartsScraper(BaseScraper):
                             wait = WebDriverWait(self.driver, 5)
                             if by_type == By.CSS_SELECTOR:
                                 title_element = wait.until(EC.presence_of_element_located((by_type, selector)))
-                                title_text = title_element.text.strip()
-                                if title_text and len(title_text) >= 3:
-                                    break
+                            title_text = title_element.text.strip()
+                            if title_text and len(title_text) >= 3:
+                                break
                         except:
                             continue
                     
@@ -682,7 +683,8 @@ class MoparOnlinePartsScraper(BaseScraper):
                     # Check if redirected away
                     current_url = self.driver.current_url.lower()
                     if 'moparonlineparts.com' not in current_url and not current_url.startswith(('chrome-error://', 'about:')):
-                        self.logger.warning(f"⚠️ Redirected away from target site: {current_url}")
+                        safe_current_url = self.safe_str(current_url)
+                        self.logger.warning(f"⚠️ Redirected away from target site: {safe_current_url}")
                         retry_count += 1
                         if retry_count < max_retries:
                             wait_time = random.uniform(10, 15)
@@ -695,18 +697,20 @@ class MoparOnlinePartsScraper(BaseScraper):
                     if not title_text or len(title_text) < 3:
                         page_content_length = len(html)
                         if page_content_length < 8000:
-                            self.logger.warning(f"⚠️ Page appears blocked or empty: {url}")
-                            retry_count += 1
-                            if retry_count < max_retries:
-                                wait_time = random.uniform(10, 15)
-                                time.sleep(wait_time)
-                                continue
-                            else:
-                                return None
+                            safe_url = self.safe_str(url)
+                            self.logger.warning(f"⚠️ Page appears blocked or empty: {safe_url}")
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            wait_time = random.uniform(10, 15)
+                            time.sleep(wait_time)
+                            continue
+                        else:
+                            return None
                     
                     # Success
                     html = self.driver.page_source
-                    self.logger.info(f"✓ Page loaded successfully, title: {title_text[:50]}")
+                    safe_title_preview = self.safe_str(title_text[:50] if len(title_text) > 50 else title_text)
+                    self.logger.info(f"✓ Page loaded successfully, title: {safe_title_preview}")
                     # Restore timeout
                     self.page_load_timeout = original_timeout
                     self.driver.set_page_load_timeout(original_timeout)
@@ -765,9 +769,10 @@ class MoparOnlinePartsScraper(BaseScraper):
                         self.driver.set_page_load_timeout(original_timeout)
                         
                 except Exception as e:
-                    error_str = str(e).lower()
+                    error_str = self.safe_str(e).lower()
                     if any(err in error_str for err in ['connection', 'network', 'dns', 'err_', 'timeout']):
-                        self.logger.warning(f"⚠️ Connection/network error: {e}")
+                        safe_error = self.safe_str(e)
+                        self.logger.warning(f"⚠️ Connection/network error: {safe_error}")
                         retry_count += 1
                         if retry_count < max_retries:
                             wait_time = random.uniform(5, 8)
@@ -780,7 +785,7 @@ class MoparOnlinePartsScraper(BaseScraper):
                         self.page_load_timeout = original_timeout
                         self.driver.set_page_load_timeout(original_timeout)
                         raise
-                        
+                    
             except Exception as e:
                 # Restore timeout in case of any exception
                 try:
@@ -788,7 +793,8 @@ class MoparOnlinePartsScraper(BaseScraper):
                     self.driver.set_page_load_timeout(original_timeout)
                 except:
                     pass
-                self.logger.error(f"❌ Exception: {type(e).__name__}: {str(e)}")
+                safe_error = self.safe_str(e)
+                self.logger.error(f"❌ Exception: {type(e).__name__}: {safe_error}")
                 recovery = self.error_handler.handle_error(e, retry_count, {'url': url})
                 
                 if not recovery['should_retry']:
@@ -839,31 +845,32 @@ class MoparOnlinePartsScraper(BaseScraper):
                 else:
                     title_tag = soup.find('title')
                     if title_tag:
-                        product_data['title'] = title_tag.get_text(strip=True)
+                        product_data['title'] = self.safe_find_text(soup, title_tag)
             
             if title_elem and not product_data['title']:
-                product_data['title'] = title_elem.get_text(strip=True)
+                product_data['title'] = self.safe_find_text(soup, title_elem)
             
             if not product_data['title'] or len(product_data['title']) < 3:
                 self.logger.warning(f"⚠️ No valid title found for {url}")
                 return None
             
-            self.logger.info(f"📝 Found title: {product_data['title'][:60]}")
+            safe_title = self.safe_str(product_data['title'][:60] if len(product_data['title']) > 60 else product_data['title'])
+            self.logger.info(f"📝 Found title: {safe_title}")
             
             # Extract SKU/Part Number - Method 1: From span with class "sku-display"
             sku_elem = soup.find('span', class_='sku-display')
             if sku_elem:
-                product_data['sku'] = sku_elem.get_text(strip=True)
+                product_data['sku'] = self.safe_find_text(soup, sku_elem)
                 product_data['pn'] = self.clean_sku(product_data['sku'])
-                self.logger.info(f"📦 Found SKU from sku-display: {product_data['sku']}")
+                self.logger.info(f"📦 Found SKU from sku-display: {self.safe_str(product_data['sku'])}")
             
             # Method 2: From h2 with class "list-value sku-display"
             if not product_data['sku']:
                 sku_elem = soup.find('h2', class_=re.compile(r'list-value.*sku|sku.*list-value', re.I))
                 if sku_elem:
-                    product_data['sku'] = sku_elem.get_text(strip=True)
+                    product_data['sku'] = self.safe_find_text(soup, sku_elem)
                     product_data['pn'] = self.clean_sku(product_data['sku'])
-                    self.logger.info(f"📦 Found SKU from h2: {product_data['sku']}")
+                    self.logger.info(f"📦 Found SKU from h2: {self.safe_str(product_data['sku'])}")
             
             # Method 3: From product_data JSON script tag
             if not product_data['sku']:
@@ -872,20 +879,22 @@ class MoparOnlinePartsScraper(BaseScraper):
                     try:
                         product_json = json.loads(product_data_script.string)
                         if 'sku' in product_json:
-                            product_data['sku'] = str(product_json['sku']).strip()
+                            product_data['sku'] = self.safe_str(product_json['sku']).strip()
                             product_data['pn'] = self.clean_sku(product_data['sku'])
-                            self.logger.info(f"📦 Found SKU from product_data JSON: {product_data['sku']}")
+                            self.logger.info(f"📦 Found SKU from product_data JSON: {self.safe_str(product_data['sku'])}")
                     except json.JSONDecodeError as e:
-                        self.logger.debug(f"Error parsing product_data JSON: {str(e)}")
+                        self.logger.debug(f"Error parsing product_data JSON: {self.safe_str(e)}")
             
             # Method 4: Search for "Part Number:" or "SKU:" text
             if not product_data['sku']:
                 page_text = soup.get_text()
+                # Use safe_str to handle Unicode in page text
+                page_text = self.safe_str(page_text)
                 part_num_match = re.search(r'(?:Part\s*Number|SKU)[:\s]+([A-Z0-9]{5,})', page_text, re.I)
                 if part_num_match:
                     product_data['sku'] = part_num_match.group(1).strip()
                     product_data['pn'] = self.clean_sku(product_data['sku'])
-                    self.logger.info(f"📦 Found SKU from page text: {product_data['sku']}")
+                    self.logger.info(f"📦 Found SKU from page text: {self.safe_str(product_data['sku'])}")
             
             # Method 5: LAST RESORT - Extract from URL (e.g., /oem-parts/mopar-wheel-82213447)
             if not product_data['sku']:
@@ -907,13 +916,15 @@ class MoparOnlinePartsScraper(BaseScraper):
             # Check if this is a wheel product
             try:
                 is_wheel = self.is_wheel_product(product_data['title'])
-                self.logger.info(f"🔍 Checking: '{product_data['title'][:60]}' -> {'✅ WHEEL' if is_wheel else '❌ SKIPPED'}")
-                
+                safe_title_preview = self.safe_str(product_data['title'][:60] if len(product_data['title']) > 60 else product_data['title'])
+                self.logger.info(f"🔍 Checking: '{safe_title_preview}' -> {'✅ WHEEL' if is_wheel else '❌ SKIPPED'}")
+
                 if not is_wheel:
-                    self.logger.info(f"⏭️ Skipping non-wheel product: {product_data['title']}")
+                    safe_title = self.safe_str(product_data['title'])
+                    self.logger.info(f"⏭️ Skipping non-wheel product: {safe_title}")
                     return None
             except Exception as e:
-                self.logger.warning(f"Error checking if wheel product: {str(e)}")
+                self.logger.warning(f"Error checking if wheel product: {self.safe_str(e)}")
                 return None
             
             # Extract price - Method 1: From sale-price-value
@@ -923,10 +934,10 @@ class MoparOnlinePartsScraper(BaseScraper):
             if not price_elem:
                 price_elem = soup.find('span', class_=re.compile(r'sale-price-value', re.I))
             if price_elem:
-                price_text = price_elem.get_text(strip=True)
+                price_text = self.safe_find_text(soup, price_elem)
                 product_data['actual_price'] = self.extract_price(price_text)
                 if product_data['actual_price']:
-                    self.logger.info(f"💰 Found price: {product_data['actual_price']}")
+                    self.logger.info(f"💰 Found price: {self.safe_str(product_data['actual_price'])}")
             
             # Method 2: From product_data JSON
             if not product_data['actual_price']:
@@ -935,18 +946,18 @@ class MoparOnlinePartsScraper(BaseScraper):
                     try:
                         product_json = json.loads(product_data_script.string)
                         if 'price' in product_json:
-                            product_data['actual_price'] = str(product_json['price']).strip()
-                            self.logger.info(f"💰 Found price from JSON: {product_data['actual_price']}")
+                            product_data['actual_price'] = self.safe_str(product_json['price']).strip()
+                            self.logger.info(f"💰 Found price from JSON: {self.safe_str(product_data['actual_price'])}")
                     except:
                         pass
             
             # Extract MSRP - Method 1: From list-price-value
             msrp_elem = soup.find('span', class_=re.compile(r'list-price-value', re.I))
             if msrp_elem:
-                msrp_text = msrp_elem.get_text(strip=True)
+                msrp_text = self.safe_find_text(soup, msrp_elem)
                 product_data['msrp'] = self.extract_price(msrp_text)
                 if product_data['msrp']:
-                    self.logger.info(f"💰 Found MSRP: {product_data['msrp']}")
+                    self.logger.info(f"💰 Found MSRP: {self.safe_str(product_data['msrp'])}")
             
             # Method 2: From product_data JSON
             if not product_data['msrp']:
@@ -955,8 +966,8 @@ class MoparOnlinePartsScraper(BaseScraper):
                     try:
                         product_json = json.loads(product_data_script.string)
                         if 'msrp' in product_json:
-                            product_data['msrp'] = str(product_json['msrp']).strip()
-                            self.logger.info(f"💰 Found MSRP from JSON: {product_data['msrp']}")
+                            product_data['msrp'] = self.safe_str(product_json['msrp']).strip()
+                            self.logger.info(f"💰 Found MSRP from JSON: {self.safe_str(product_data['msrp'])}")
                     except:
                         pass
             
@@ -968,8 +979,8 @@ class MoparOnlinePartsScraper(BaseScraper):
                 img_url = img_elem.get('src') or img_elem.get('data-src') or img_elem.get('data-lazy-src')
                 if img_url:
                     product_data['image_url'] = f"https:{img_url}" if img_url.startswith('//') else img_url
-                    if not product_data['image_url'].startswith('http'):
-                        product_data['image_url'] = f"https:{product_data['image_url']}"
+            if product_data.get('image_url') and not product_data['image_url'].startswith('http'):
+                product_data['image_url'] = f"https:{product_data['image_url']}"
             
             # Method 2: From product_data JSON (first image)
             if not product_data['image_url']:
@@ -991,7 +1002,7 @@ class MoparOnlinePartsScraper(BaseScraper):
                 desc_elem = soup.find('li', class_='description')
             if desc_elem:
                 # Get text and clean up HTML tags
-                desc_text = desc_elem.get_text(strip=True, separator=' ')
+                desc_text = self.safe_find_text(soup, desc_elem)
                 # Remove extra whitespace
                 desc_text = re.sub(r'\s+', ' ', desc_text)
                 product_data['description'] = desc_text.strip()
@@ -1018,7 +1029,7 @@ class MoparOnlinePartsScraper(BaseScraper):
                 if not value_elem:
                     value_elem = also_known_elem.find('span', class_='list-value')
                 if value_elem:
-                    product_data['also_known_as'] = value_elem.get_text(strip=True)
+                    product_data['also_known_as'] = self.safe_find_text(soup, value_elem)
             
             # Method 2: From product_data JSON
             if not product_data['also_known_as']:
@@ -1027,7 +1038,7 @@ class MoparOnlinePartsScraper(BaseScraper):
                     try:
                         product_json = json.loads(product_data_script.string)
                         if 'also_known_as' in product_json:
-                            product_data['also_known_as'] = str(product_json['also_known_as']).strip()
+                            product_data['also_known_as'] = self.safe_str(product_json['also_known_as']).strip()
                     except:
                         pass
             
@@ -1061,9 +1072,9 @@ class MoparOnlinePartsScraper(BaseScraper):
                         if label_text in all_text:
                             value_elem_text = all_text.replace(label_text, '', 1).strip()
                             if value_elem_text:
-                                product_data['replaces'] = value_elem_text
+                                product_data['replaces'] = self.safe_str(value_elem_text)
                 if value_elem and not product_data['replaces']:
-                    product_data['replaces'] = value_elem.get_text(strip=True)
+                    product_data['replaces'] = self.safe_find_text(soup, value_elem)
             
             # Method 2: From definition lists (dl/dt/dd structure)
             if not product_data['replaces']:
@@ -1072,8 +1083,8 @@ class MoparOnlinePartsScraper(BaseScraper):
                     dts = dl.find_all('dt')
                     dds = dl.find_all('dd')
                     for i, dt in enumerate(dts):
-                        label = dt.get_text(strip=True).lower()
-                        value = dds[i].get_text(strip=True) if i < len(dds) else ''
+                        label = self.safe_find_text(soup, dt).lower()
+                        value = self.safe_find_text(soup, dds[i]) if i < len(dds) else ''
                         
                         if ('replace' in label or 'supersede' in label) and value:
                             product_data['replaces'] = value
@@ -1089,17 +1100,19 @@ class MoparOnlinePartsScraper(BaseScraper):
                         product_json = json.loads(product_data_script.string)
                         # Try various possible keys
                         if 'replaces' in product_json:
-                            product_data['replaces'] = str(product_json['replaces']).strip()
+                            product_data['replaces'] = self.safe_str(product_json['replaces']).strip()
                         elif 'supersedes' in product_json:
-                            product_data['replaces'] = str(product_json['supersedes']).strip()
+                            product_data['replaces'] = self.safe_str(product_json['supersedes']).strip()
                         elif 'replaced_by' in product_json:
-                            product_data['replaces'] = str(product_json['replaced_by']).strip()
+                            product_data['replaces'] = self.safe_str(product_json['replaced_by']).strip()
                     except:
                         pass
             
             # Method 4: Search in page text for "Replaces:" or "Supersedes:"
             if not product_data['replaces']:
                 page_text = soup.get_text()
+                # Use safe_str to handle Unicode in page text
+                page_text = self.safe_str(page_text)
                 # Look for patterns like "Replaces: ABC123" or "Supersedes: XYZ789"
                 replaces_patterns = [
                     r'(?:replaces|supersedes)[:\s]+([A-Z0-9\s,]+)',
@@ -1110,9 +1123,9 @@ class MoparOnlinePartsScraper(BaseScraper):
                     if match:
                         product_data['replaces'] = match.group(1).strip()
                         break
-            
+                
             if product_data['replaces']:
-                self.logger.info(f"🔄 Found replaces: {product_data['replaces']}")
+                self.logger.info(f"🔄 Found replaces: {self.safe_str(product_data['replaces'])}")
             
             # Extract fitment data from product_data JSON script tag
             product_data_script = soup.find('script', id='product_data', type='application/json')
@@ -1193,16 +1206,16 @@ class MoparOnlinePartsScraper(BaseScraper):
                                 trim_cell = row.find('td', class_='fitment-trim')
                                 engine_cell = row.find('td', class_='fitment-engine')
                                 
-                                year = year_cell.get_text(strip=True) if year_cell else ''
-                                make = make_cell.get_text(strip=True) if make_cell else ''
-                                model = model_cell.get_text(strip=True) if model_cell else ''
+                                year = self.safe_find_text(soup, year_cell) if year_cell else ''
+                                make = self.safe_find_text(soup, make_cell) if make_cell else ''
+                                model = self.safe_find_text(soup, model_cell) if model_cell else ''
                                 
                                 # Parse trims (comma-separated)
-                                trim_text = trim_cell.get_text(strip=True) if trim_cell else ''
+                                trim_text = self.safe_find_text(soup, trim_cell) if trim_cell else ''
                                 trims = [t.strip() for t in trim_text.split(',') if t.strip()] if trim_text else ['']
                                 
                                 # Parse engines (comma-separated)
-                                engine_text = engine_cell.get_text(strip=True) if engine_cell else ''
+                                engine_text = self.safe_find_text(soup, engine_cell) if engine_cell else ''
                                 engines = [e.strip() for e in engine_text.split(',') if e.strip()] if engine_text else ['']
                                 
                                 # Create all combinations
@@ -1225,7 +1238,8 @@ class MoparOnlinePartsScraper(BaseScraper):
             
             # If no fitments found, add empty fitment
             if not product_data['fitments']:
-                self.logger.warning(f"⚠️ No fitment data found for {product_data['title']}")
+                safe_title = self.safe_str(product_data['title'])
+                self.logger.warning(f"⚠️ No fitment data found for {safe_title}")
                 product_data['fitments'].append({
                     'year': '',
                     'make': '',
@@ -1234,11 +1248,18 @@ class MoparOnlinePartsScraper(BaseScraper):
                     'engine': ''
                 })
             
-            self.logger.info(f"✅ Successfully scraped: {product_data['title']}")
+            safe_title = self.safe_str(product_data['title'])
+            self.logger.info(f"✅ Successfully scraped: {safe_title}")
             return product_data
             
         except Exception as e:
-            self.logger.error(f"❌ Error scraping product {url}: {str(e)}")
+            safe_error = self.safe_str(e)
+            self.logger.error(f"❌ Error scraping product {url}: {safe_error}")
             import traceback
-            self.logger.error(traceback.format_exc())
+            try:
+                tb_str = traceback.format_exc()
+                safe_tb = self.safe_str(tb_str)
+                self.logger.error(safe_tb)
+            except:
+                pass
             return None

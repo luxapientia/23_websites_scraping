@@ -1285,6 +1285,55 @@ class BaseScraper(ABC):
         price = re.sub(r'[^\d.]', '', str(price_text))
         return price
     
+    def convert_currency(self, amount, from_currency, to_currency):
+        """
+        Convert currency amount from one currency to another
+        
+        Args:
+            amount: Numeric amount (as float or string)
+            from_currency: Source currency code (e.g., 'EUR', 'USD')
+            to_currency: Target currency code (e.g., 'EUR', 'USD')
+        
+        Returns:
+            str: Converted amount as string, or original amount if conversion fails
+        """
+        try:
+            # Convert amount to float
+            if isinstance(amount, str):
+                # Extract numeric value
+                amount = re.sub(r'[^\d.]', '', amount)
+            amount_float = float(amount)
+            
+            # If same currency, return as is
+            if from_currency.upper() == to_currency.upper():
+                return f"{amount_float:.2f}"
+            
+            # Exchange rates (approximate, can be updated)
+            # Using approximate rates - for production, consider using an API
+            # Updated rate: €870.63 * 1.16 = 1009.24 USD (as per user requirement)
+            exchange_rates = {
+                'EUR': {
+                    'USD': 1.16,  # 1 EUR = 1.16 USD (updated rate)
+                },
+                'USD': {
+                    'EUR': 0.862,  # 1 USD = 0.862 EUR (inverse of 1.16)
+                },
+            }
+            
+            # Get conversion rate
+            if from_currency.upper() in exchange_rates:
+                if to_currency.upper() in exchange_rates[from_currency.upper()]:
+                    rate = exchange_rates[from_currency.upper()][to_currency.upper()]
+                    converted = amount_float * rate
+                    return f"{converted:.2f}"
+            
+            # If conversion not available, return original
+            self.logger.warning(f"Currency conversion not available: {from_currency} -> {to_currency}, returning original amount")
+            return f"{amount_float:.2f}"
+        except Exception as e:
+            self.logger.warning(f"Error converting currency: {str(e)}, returning original amount")
+            return str(amount) if amount else ''
+    
     def safe_find_text(self, soup, selector, attribute=None, default=''):
         """
         Safely extract text from BeautifulSoup element
@@ -1449,13 +1498,19 @@ class BaseScraper(ABC):
                 # OSError [WinError 6] The handle is invalid - harmless during shutdown
                 # AttributeError - driver already closed
                 error_msg = str(e).lower()
-                if 'handle is invalid' in error_msg or 'invalid' in error_msg:
+                if 'handle is invalid' in error_msg or 'invalid' in error_msg or 'winerror 6' in error_msg:
                     # This is harmless - driver was already closed or handle invalid
-                    self.logger.debug(f"Driver handle already invalid (harmless): {str(e)}")
+                    # Suppress the error message to avoid cluttering output
+                    pass  # Don't log this - it's expected during cleanup
                 else:
                     cleanup_errors.append(f"Error closing driver: {str(e)}")
             except Exception as e:
-                cleanup_errors.append(f"Error closing driver: {str(e)}")
+                error_msg = str(e).lower()
+                # Suppress common harmless cleanup errors
+                if 'handle is invalid' in error_msg or 'winerror 6' in error_msg or 'invalid handle' in error_msg:
+                    pass  # Suppress - harmless cleanup error
+                else:
+                    cleanup_errors.append(f"Error closing driver: {str(e)}")
                 try:
                     # Try to force close if normal quit fails
                     import subprocess
