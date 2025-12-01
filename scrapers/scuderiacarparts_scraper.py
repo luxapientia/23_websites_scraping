@@ -206,14 +206,13 @@ class ScuderiaCarPartsScraper(BaseScraper):
                 except:
                     return True  # Assume overlay is gone if we can't check
             
-            # Handle "Load more results" button - click twice then proceed to next step
-            self.logger.info("Handling 'Load more results' button (will click twice then proceed)...")
+            # Handle "Load more results" button - click until all results are loaded
+            self.logger.info("Handling 'Load more results' button (will click until all results are loaded)...")
             load_more_clicked = 0
-            max_load_more_clicks = 2  # Click only twice as requested
             consecutive_no_button = 0
             max_consecutive_no_button = 3  # Stop after 3 consecutive attempts with no button
             
-            while load_more_clicked < max_load_more_clicks:
+            while True:  # Continue until button is no longer available
                 try:
                     # CRITICAL: Wait for loading overlay to disappear before trying to click
                     wait_for_loading_overlay_to_disappear(timeout=5)
@@ -280,7 +279,7 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                 load_more_button.click()
                                 load_more_clicked += 1
                                 consecutive_no_button = 0  # Reset counter
-                                self.logger.info(f"✓ Clicked 'Load more results' button (click #{load_more_clicked}/{max_load_more_clicks})")
+                                self.logger.info(f"✓ Clicked 'Load more results' button (click #{load_more_clicked})")
                                 
                                 # Wait for loading overlay to appear and then disappear (content is loading)
                                 time.sleep(1)  # Brief wait for overlay to appear
@@ -301,10 +300,7 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                 self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
                                 time.sleep(1)
                                 
-                                # Check if we've reached the limit - if so, break to proceed to next step
-                                if load_more_clicked >= max_load_more_clicks:
-                                    self.logger.info(f"✓ Reached click limit ({max_load_more_clicks}), proceeding to extract product URLs...")
-                                    break
+                                # Continue to next iteration to check for more results
                                 
                             except Exception as click_error:
                                 error_str = str(click_error).lower()
@@ -317,7 +313,7 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                         load_more_button.click()
                                         load_more_clicked += 1
                                         consecutive_no_button = 0
-                                        self.logger.info(f"✓ Clicked 'Load more results' button after waiting for overlay (click #{load_more_clicked}/{max_load_more_clicks})")
+                                        self.logger.info(f"✓ Clicked 'Load more results' button after waiting for overlay (click #{load_more_clicked})")
                                         time.sleep(1)
                                         wait_for_loading_overlay_to_disappear(timeout=10)
                                         # Wait for new product containers (NOT URL-based selectors)
@@ -329,17 +325,14 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                             pass
                                         time.sleep(2)
                                         
-                                        # Check if we've reached the limit
-                                        if load_more_clicked >= max_load_more_clicks:
-                                            self.logger.info(f"✓ Reached click limit ({max_load_more_clicks}), proceeding to extract product URLs...")
-                                            break
+                                        # Continue to next iteration to check for more results
                                     except:
                                         # If still fails, try JavaScript click
                                         try:
                                             self.driver.execute_script("arguments[0].click();", load_more_button)
                                             load_more_clicked += 1
                                             consecutive_no_button = 0
-                                            self.logger.info(f"✓ Clicked 'Load more results' button via JavaScript (click #{load_more_clicked}/{max_load_more_clicks})")
+                                            self.logger.info(f"✓ Clicked 'Load more results' button via JavaScript (click #{load_more_clicked})")
                                             time.sleep(1)
                                             wait_for_loading_overlay_to_disappear(timeout=10)
                                             # Wait for new product containers (NOT URL-based selectors)
@@ -351,10 +344,7 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                                 pass
                                             time.sleep(2)
                                             
-                                            # Check if we've reached the limit
-                                            if load_more_clicked >= max_load_more_clicks:
-                                                self.logger.info(f"✓ Reached click limit ({max_load_more_clicks}), proceeding to extract product URLs...")
-                                                break
+                                            # Continue to next iteration to check for more results
                                         except Exception as js_click_error:
                                             self.logger.warning(f"JavaScript click also failed: {str(js_click_error)}")
                                             consecutive_no_button += 1
@@ -368,15 +358,12 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                         self.driver.execute_script("arguments[0].click();", load_more_button)
                                         load_more_clicked += 1
                                         consecutive_no_button = 0
-                                        self.logger.info(f"✓ Clicked 'Load more results' button via JavaScript (click #{load_more_clicked}/{max_load_more_clicks})")
+                                        self.logger.info(f"✓ Clicked 'Load more results' button via JavaScript (click #{load_more_clicked})")
                                         time.sleep(1)
                                         wait_for_loading_overlay_to_disappear(timeout=10)
                                         time.sleep(2)
                                         
-                                        # Check if we've reached the limit
-                                        if load_more_clicked >= max_load_more_clicks:
-                                            self.logger.info(f"✓ Reached click limit ({max_load_more_clicks}), proceeding to extract product URLs...")
-                                            break
+                                        # Continue to next iteration to check for more results
                                     except Exception as js_click_error:
                                         self.logger.warning(f"JavaScript click also failed: {str(js_click_error)}")
                                         consecutive_no_button += 1
@@ -406,7 +393,7 @@ class ScuderiaCarPartsScraper(BaseScraper):
                             break
                     time.sleep(1)
                     
-            self.logger.info(f"Finished clicking 'Load more results' button ({load_more_clicked}/{max_load_more_clicks} clicks) - proceeding to extract product URLs...")
+            self.logger.info(f"Finished clicking 'Load more results' button ({load_more_clicked} total clicks) - proceeding to extract product URLs...")
                     
             # Final scroll to ensure all lazy-loaded content is visible
             self.logger.info("Performing final scroll to load any lazy-loaded content...")
