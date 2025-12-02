@@ -6,6 +6,7 @@ import atexit
 import gc
 from datetime import datetime
 
+from scrapers.acurapartswarehouse_scraper import AcuraPartsWarehouseScraper
 from scrapers.audiusa_scraper import AudiUSAScraper
 from scrapers.bmw_scraper import BMWScraper
 from scrapers.gm_oemparts_scraper import GMOemPartsScraper
@@ -20,8 +21,10 @@ from scrapers.lexus_scraper import LexusScraper
 from scrapers.mazda_scraper import MazdaScraper
 from scrapers.mercedes_scraper import MercedesScraper
 from scrapers.mitsubishi_scraper import MitsubishiScraper
+from scrapers.moparonlineparts_scraper import MoparOnlinePartsScraper
 from scrapers.nissan_scraper import NissanScraper
 from scrapers.porsche_scraper import PorscheScraper
+from scrapers.scuderiacarparts_scraper import ScuderiaCarPartsScraper
 from scrapers.subaru_scraper import SubaruScraper
 from scrapers.toyota_scraper import ToyotaScraper
 from scrapers.volkswagen_scraper import VolkswagenScraper
@@ -82,7 +85,7 @@ def create_scraper(site_config):
     site_name = site_config.get('name', '')
     
     if site_name == 'tascaparts':
-        return TascaPartsScraper()
+        return TascaPartsScraper()  # pyright: ignore[reportUndefinedVariable]
     elif site_name == 'acuraparts':
         return AcuraPartsWarehouseScraper()
     elif site_name == 'moparonline':
@@ -300,8 +303,6 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except KeyboardInterrupt:
-        print("\n\nScraping interrupted by user. Exiting...")
     except Exception as e:
         logging.error(f"Fatal error: {str(e)}")
         raise

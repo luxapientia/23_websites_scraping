@@ -114,7 +114,7 @@ class BMWScraper(BaseScraper):
                 self.ensure_driver()
             
             # Try to search - the search form might need special handling
-            search_url = f"{self.base_url}/search?q=wheel"
+            search_url = f"{self.base_url}/search?search_str=wheel"
             self.logger.info(f"Searching: {search_url}")
             
             # Increase page load timeout
@@ -126,7 +126,7 @@ class BMWScraper(BaseScraper):
                 html = self.get_page(search_url, use_selenium=True, wait_time=2)
                 if not html:
                     # Try alternative search URL pattern
-                    search_url = f"{self.base_url}/?q=wheel"
+                    search_url = f"{self.base_url}/search?search_str=wheel"
                     html = self.get_page(search_url, use_selenium=True, wait_time=2)
                     if not html:
                         self.logger.error("Failed to fetch search page")
@@ -187,9 +187,9 @@ class BMWScraper(BaseScraper):
                     self.logger.info(f"Loading search page {page_num}...")
                     
                     pagination_urls = [
-                        f"{self.base_url}/search?q=wheel&page={page_num}",
-                        f"{self.base_url}/search?q=wheel&p={page_num}",
-                        f"{self.base_url}/?q=wheel&page={page_num}",
+                        f"{self.base_url}/search?search_str=wheel&page={page_num}",
+                        f"{self.base_url}/search?search_str=wheel&p={page_num}",
+                        f"{self.base_url}/search?search_str=wheel&page={page_num}",
                     ]
                     
                     page_loaded = False
@@ -702,21 +702,44 @@ class BMWScraper(BaseScraper):
         }
         
         try:
-            # Extract title
-            title_elem = soup.find('h1', class_=re.compile(r'product', re.I))
-            if not title_elem:
+            # Extract title - Priority: <h2 class="panel-title"><span class="prodDescriptH2">Wheel</span>
+            # Based on SimplePart platform structure (similar to Audi USA)
+            h2_title = soup.find('h2', class_='panel-title')
+            if h2_title:
+                span_title = h2_title.find('span', class_='prodDescriptH2')
+                if span_title:
+                    product_data['title'] = span_title.get_text(strip=True)
+                else:
+                    product_data['title'] = h2_title.get_text(strip=True)
+            
+            # Fallback: <h1> or <h1> > <span>
+            if not product_data['title']:
                 title_elem = soup.find('h1')
-            if not title_elem:
+                if title_elem:
+                    span_elem = title_elem.find('span')
+                    if span_elem:
+                        product_data['title'] = span_elem.get_text(strip=True)
+                    else:
+                        product_data['title'] = title_elem.get_text(strip=True)
+            
+            # Fallback: <title> tag
+            if not product_data['title']:
+                title_tag = soup.find('title')
+                if title_tag:
+                    title_text = title_tag.get_text(strip=True)
+                    # Extract from "PartNumber - Product Name - Site Name" -> "Product Name"
+                    if ' - ' in title_text:
+                        parts = title_text.split(' - ')
+                        if len(parts) >= 2:
+                            product_data['title'] = parts[1].strip()
+                    else:
+                        product_data['title'] = title_text
+            
+            # Fallback: meta og:title
+            if not product_data['title']:
                 title_elem = soup.find('meta', property='og:title')
                 if title_elem:
                     product_data['title'] = title_elem.get('content', '').strip()
-                else:
-                    title_tag = soup.find('title')
-                    if title_tag:
-                        product_data['title'] = self.safe_find_text(soup, title_tag)
-            
-            if title_elem and not product_data['title']:
-                product_data['title'] = self.safe_find_text(soup, title_elem)
             
             if not product_data['title'] or len(product_data['title']) < 3:
                 self.logger.warning(f"⚠️ No valid title found for {url}")
@@ -725,16 +748,40 @@ class BMWScraper(BaseScraper):
             safe_title = self.safe_str(product_data['title'][:60] if len(product_data['title']) > 60 else product_data['title'])
             self.logger.info(f"📝 Found title: {safe_title}")
             
-            # Extract SKU/Part Number - try multiple methods
-            # Pattern from URL: /oem-parts/bmw-product-name-{part-number}
-            # Part number is the last segment (digits) after the last dash
-            url_match = re.search(r'/oem-parts/bmw-[^/]+-(\d+)(?:\?|$)', url)
-            if url_match:
-                product_data['sku'] = url_match.group(1)
-                product_data['pn'] = self.clean_sku(product_data['sku'])
-                self.logger.info(f"📦 Found SKU from URL: {self.safe_str(product_data['sku'])}")
+            # Extract SKU/Part Number - Priority: <span itemprop="value" class="stock-code-text"><strong>PartNumber</strong></span>
+            sku_span = soup.find('span', {'itemprop': 'value', 'class': lambda x: x and 'stock-code-text' in ' '.join(x) if isinstance(x, list) else 'stock-code-text' in str(x)})
+            if not sku_span:
+                # Try finding by class only
+                sku_span = soup.find('span', class_=lambda x: x and 'stock-code-text' in ' '.join(x) if isinstance(x, list) else 'stock-code-text' in str(x))
             
-            # Also try to find in page
+            if sku_span:
+                strong_elem = sku_span.find('strong')
+                if strong_elem:
+                    part_number = strong_elem.get_text(strip=True)
+                else:
+                    part_number = sku_span.get_text(strip=True)
+                
+                if part_number:
+                    product_data['sku'] = part_number
+                    product_data['pn'] = self.clean_sku(part_number)
+                    self.logger.info(f"📦 Found SKU from page: {self.safe_str(product_data['sku'])}")
+            
+            # Fallback: Pattern from URL: /oem-parts/bmw-product-name-{part-number}
+            if not product_data['sku']:
+                url_match = re.search(r'/oem-parts/bmw-[^/]+-(\d+)(?:\?|$)', url)
+                if url_match:
+                    product_data['sku'] = url_match.group(1)
+                    product_data['pn'] = self.clean_sku(product_data['sku'])
+                    self.logger.info(f"📦 Found SKU from URL: {self.safe_str(product_data['sku'])}")
+            
+            # Fallback: meta itemprop="sku"
+            if not product_data['sku']:
+                sku_meta = soup.find('meta', {'itemprop': 'sku'})
+                if sku_meta:
+                    product_data['sku'] = sku_meta.get('content', '').strip()
+                    product_data['pn'] = self.clean_sku(product_data['sku'])
+            
+            # Fallback: try other selectors
             if not product_data['sku']:
                 sku_elem = soup.find('span', class_=re.compile(r'sku|part.*number', re.I))
                 if not sku_elem:
@@ -742,6 +789,22 @@ class BMWScraper(BaseScraper):
                 if sku_elem:
                     product_data['sku'] = self.safe_find_text(soup, sku_elem)
                     product_data['pn'] = self.clean_sku(product_data['sku'])
+            
+            # Extract replaces (supersessions) - <span class="alt-stock-code-text"><strong>Part1; Part2; Part3</strong></span>
+            replaces_span = soup.find('span', class_=lambda x: x and 'alt-stock-code-text' in ' '.join(x) if isinstance(x, list) else 'alt-stock-code-text' in str(x))
+            if replaces_span:
+                strong_elem = replaces_span.find('strong')
+                if strong_elem:
+                    replaces_text = strong_elem.get_text(strip=True)
+                else:
+                    replaces_text = replaces_span.get_text(strip=True)
+                
+                if replaces_text:
+                    # Split by semicolon and clean each part
+                    replaces_parts = [part.strip() for part in replaces_text.split(';') if part.strip()]
+                    if replaces_parts:
+                        product_data['replaces'] = ', '.join(replaces_parts)
+                        self.logger.info(f"🔄 Found replaces: {self.safe_str(product_data['replaces'][:60])}")
             
             # Check if this is a wheel product
             try:
@@ -757,17 +820,66 @@ class BMWScraper(BaseScraper):
                 self.logger.warning(f"Error checking if wheel product: {self.safe_str(e)}")
                 return None
             
-            # Extract price
-            price_elem = soup.find('span', class_=re.compile(r'price|sale.*price', re.I))
-            if not price_elem:
-                price_elem = soup.find('div', class_=re.compile(r'price|sale.*price', re.I))
-            if not price_elem:
-                price_elem = soup.find('strong', class_=re.compile(r'price', re.I))
-            if price_elem:
-                price_text = self.safe_find_text(soup, price_elem)
-                product_data['actual_price'] = self.extract_price(price_text)
-                if product_data['actual_price']:
-                    self.logger.info(f"💰 Found price: {self.safe_str(product_data['actual_price'])}")
+            # Extract price - Priority: <meta itemprop="price" content="179.50"> or <span class="productPriceSpan money-3">$ 179.50</span>
+            price_meta = soup.find('meta', {'itemprop': 'price'})
+            if price_meta:
+                price_content = price_meta.get('content', '').strip()
+                if price_content:
+                    try:
+                        product_data['actual_price'] = float(price_content)
+                        self.logger.info(f"💰 Found price from meta: {self.safe_str(product_data['actual_price'])}")
+                    except (ValueError, TypeError):
+                        pass
+            
+            # Fallback: <span class="productPriceSpan money-3">$ 179.50</span>
+            if not product_data['actual_price']:
+                price_span = soup.find('span', class_=lambda x: x and 'productPriceSpan' in ' '.join(x) if isinstance(x, list) else 'productPriceSpan' in str(x))
+                if not price_span:
+                    price_span = soup.find('span', class_=lambda x: x and 'money-3' in ' '.join(x) if isinstance(x, list) else 'money-3' in str(x))
+                
+                if price_span:
+                    price_text = price_span.get_text(strip=True)
+                    if price_text:
+                        if '€' in price_text or 'EUR' in price_text.upper():
+                            price_value = self.extract_price(price_text)
+                            if price_value:
+                                product_data['actual_price'] = self.convert_currency(price_value, 'EUR', 'USD')
+                                self.logger.info(f"💰 Found price (EUR converted): {self.safe_str(product_data['actual_price'])}")
+                        else:
+                            price_value = self.extract_price(price_text)
+                            if price_value:
+                                product_data['actual_price'] = price_value
+                                self.logger.info(f"💰 Found price: {self.safe_str(product_data['actual_price'])}")
+            
+            # Fallback: JSON-LD structured data
+            if not product_data['actual_price']:
+                json_ld_script = soup.find('script', type='application/ld+json')
+                if json_ld_script and json_ld_script.string:
+                    try:
+                        json_data = json.loads(json_ld_script.string)
+                        if isinstance(json_data, dict) and 'offers' in json_data:
+                            offers = json_data['offers']
+                            if isinstance(offers, dict) and 'price' in offers:
+                                try:
+                                    product_data['actual_price'] = float(offers['price'])
+                                    self.logger.info(f"💰 Found price from JSON-LD: {self.safe_str(product_data['actual_price'])}")
+                                except (ValueError, TypeError):
+                                    pass
+                    except (json.JSONDecodeError, KeyError, AttributeError):
+                        pass
+            
+            # Fallback: try other price selectors
+            if not product_data['actual_price']:
+                price_elem = soup.find('span', class_=re.compile(r'price|sale.*price', re.I))
+                if not price_elem:
+                    price_elem = soup.find('div', class_=re.compile(r'price|sale.*price', re.I))
+                if not price_elem:
+                    price_elem = soup.find('strong', class_=re.compile(r'price', re.I))
+                if price_elem:
+                    price_text = self.safe_find_text(soup, price_elem)
+                    product_data['actual_price'] = self.extract_price(price_text)
+                    if product_data['actual_price']:
+                        self.logger.info(f"💰 Found price: {self.safe_str(product_data['actual_price'])}")
             
             # Extract MSRP
             msrp_elem = soup.find('span', class_=re.compile(r'list.*price|msrp', re.I))
@@ -777,74 +889,224 @@ class BMWScraper(BaseScraper):
                 msrp_text = self.safe_find_text(soup, msrp_elem)
                 product_data['msrp'] = self.extract_price(msrp_text)
             
-            # Extract image URL
-            img_elem = soup.find('img', class_=re.compile(r'product.*image|main.*image', re.I))
-            if not img_elem:
-                img_elem = soup.find('img', itemprop='image')
-            if not img_elem:
-                img_elem = soup.find('img', id=re.compile(r'product.*image', re.I))
+            # Extract image - Priority: <img itemprop="image" src="..." class="img-responsive img-thumbnail">
+            img_elem = soup.find('img', {'itemprop': 'image'})
             if img_elem:
-                img_url = img_elem.get('src') or img_elem.get('data-src') or img_elem.get('data-lazy-src')
+                img_url = img_elem.get('src') or img_elem.get('data-src')
                 if img_url:
                     product_data['image_url'] = f"https:{img_url}" if img_url.startswith('//') else img_url
+                    if not product_data['image_url'].startswith('http'):
+                        product_data['image_url'] = f"https:{product_data['image_url']}"
+            
+            # Fallback: JSON-LD structured data
+            if not product_data.get('image_url'):
+                json_ld_script = soup.find('script', type='application/ld+json')
+                if json_ld_script and json_ld_script.string:
+                    try:
+                        json_data = json.loads(json_ld_script.string)
+                        if isinstance(json_data, dict) and 'image' in json_data:
+                            images = json_data['image']
+                            if isinstance(images, list) and len(images) > 0:
+                                product_data['image_url'] = images[0]
+                            elif isinstance(images, str):
+                                product_data['image_url'] = images
+                            if product_data.get('image_url'):
+                                self.logger.info(f"🖼️ Found image from JSON-LD: {self.safe_str(product_data['image_url'][:60])}")
+                    except (json.JSONDecodeError, KeyError, AttributeError):
+                        pass
+            
+            # Fallback: try other image selectors
+            if not product_data.get('image_url'):
+                img_elem = soup.find('img', class_=re.compile(r'product.*image|main.*image', re.I))
+                if not img_elem:
+                    img_elem = soup.find('img', id=re.compile(r'product.*image', re.I))
+                if img_elem:
+                    img_url = img_elem.get('src') or img_elem.get('data-src') or img_elem.get('data-lazy-src')
+                    if img_url:
+                        product_data['image_url'] = f"https:{img_url}" if img_url.startswith('//') else img_url
+            
             if product_data.get('image_url') and not product_data['image_url'].startswith('http'):
                 product_data['image_url'] = f"https:{product_data['image_url']}"
             
-            # Extract description
-            desc_elem = soup.find('div', class_=re.compile(r'description|product.*description', re.I))
-            if not desc_elem:
-                desc_elem = soup.find('span', class_=re.compile(r'description', re.I))
-            if not desc_elem:
-                desc_elem = soup.find('p', class_=re.compile(r'description', re.I))
-            if desc_elem:
-                desc_text = self.safe_find_text(soup, desc_elem)
-                desc_text = re.sub(r'\s+', ' ', desc_text)
-                product_data['description'] = desc_text.strip()
+            # Extract description - Priority: <div class="item-desc"><p>...</p></div>
+            desc_div = soup.find('div', class_=lambda x: x and 'item-desc' in ' '.join(x) if isinstance(x, list) else 'item-desc' in str(x))
+            if desc_div:
+                desc_paragraphs = desc_div.find_all('p')
+                desc_parts = []
+                for p in desc_paragraphs:
+                    p_text = p.get_text(strip=True, separator=' ')
+                    if p_text:
+                        desc_parts.append(p_text)
+                
+                if desc_parts:
+                    desc_text = ' '.join(desc_parts)
+                    desc_text = re.sub(r'\s+', ' ', desc_text).strip()
+                    if desc_text and len(desc_text) > 10:
+                        product_data['description'] = desc_text
+                        self.logger.info(f"📄 Found description: {self.safe_str(desc_text[:60])}")
             
-            # Extract fitment data - try JSON script tag
-            product_data_script = soup.find('script', type='application/json')
-            if product_data_script and product_data_script.string:
-                try:
-                    product_json = json.loads(product_data_script.string)
-                    fitments = product_json.get('fitment', []) or product_json.get('vehicles', [])
-                    
-                    if fitments:
-                        for fitment_entry in fitments:
-                            try:
-                                year = str(fitment_entry.get('year', '')).strip()
-                                make = str(fitment_entry.get('make', '')).strip()
-                                model = str(fitment_entry.get('model', '')).strip()
-                                trims = fitment_entry.get('trims', []) or ['']
-                                engines = fitment_entry.get('engines', []) or ['']
+            # Fallback: meta itemprop="description"
+            if not product_data['description']:
+                desc_meta = soup.find('meta', {'itemprop': 'description'})
+                if desc_meta:
+                    desc_text = desc_meta.get('content', '').strip()
+                    if desc_text:
+                        product_data['description'] = desc_text
+                        self.logger.info(f"📄 Found description from meta: {self.safe_str(desc_text[:60])}")
+            
+            # Fallback: try other description selectors
+            if not product_data['description']:
+                desc_elem = soup.find('div', class_=re.compile(r'description|product.*description', re.I))
+                if not desc_elem:
+                    desc_elem = soup.find('span', class_=re.compile(r'description', re.I))
+                if not desc_elem:
+                    desc_elem = soup.find('p', class_=re.compile(r'description', re.I))
+                if desc_elem:
+                    desc_text = self.safe_find_text(soup, desc_elem)
+                    desc_text = re.sub(r'\s+', ' ', desc_text)
+                    product_data['description'] = desc_text.strip()
+            
+            # Extract fitment - Multiple methods
+            # Method 1: Extract from "What This Fits" tab
+            fitment_tab = soup.find('div', id='WhatThisFitsTabComponent_TABPANEL')
+            if fitment_tab:
+                fitment_links = fitment_tab.find_all('a', href=re.compile(r'/p/BMW_\d+_/'))
+                for link in fitment_links:
+                    href = link.get('href', '')
+                    year_match = re.search(r'/p/BMW_(\d{4})_/', href)
+                    if year_match:
+                        year = year_match.group(1)
+                        link_text = link.get_text(strip=True)
+                        model = link_text if link_text else 'BMW'
+                        product_data['fitments'].append({
+                            'year': year,
+                            'make': 'BMW',
+                            'model': model,
+                            'trim': '',
+                            'engine': ''
+                        })
+            
+            # Method 2: Extract from guided navigation year links
+            if not product_data['fitments']:
+                guided_nav = soup.find('div', class_=lambda x: x and 'guided-nav' in ' '.join(x) if isinstance(x, list) else 'guided-nav' in str(x))
+                if guided_nav:
+                    year_links = guided_nav.find_all('a', href=re.compile(r'/p/BMW_\d+_/'))
+                    for link in year_links:
+                        href = link.get('href', '')
+                        year_match = re.search(r'/p/BMW_(\d{4})_/', href)
+                        if year_match:
+                            year = year_match.group(1)
+                            link_text = link.get_text(strip=True)
+                            model = link_text if link_text else 'BMW'
+                            product_data['fitments'].append({
+                                'year': year,
+                                'make': 'BMW',
+                                'model': model,
+                                'trim': '',
+                                'engine': ''
+                            })
+            
+            # Method 3: Look for fitment table in <div id="fitment">
+            if not product_data['fitments']:
+                fitment_div = soup.find('div', id='fitment')
+                if fitment_div:
+                    fitment_table = fitment_div.find('table')
+                    if fitment_table:
+                        rows = fitment_table.find_all('tr')
+                        for row in rows[1:]:  # Skip header
+                            cells = row.find_all(['td', 'th'])
+                            if len(cells) >= 1:
+                                first_cell = cells[0]  # Only use first cell
+                                cell_text = first_cell.get_text(strip=True)
                                 
-                                if isinstance(trims, str):
-                                    trims = [t.strip() for t in trims.split(',') if t.strip()]
-                                elif not isinstance(trims, list):
-                                    trims = ['']
+                                # Extract engine from brackets if present
+                                engine_match = re.search(r'\[([^\]]+)\]', cell_text)
+                                engine = engine_match.group(1).strip() if engine_match else ''
                                 
-                                if isinstance(engines, str):
-                                    engines = [e.strip() for e in engines.split(',') if e.strip()]
-                                elif not isinstance(engines, list):
-                                    engines = ['']
+                                # Remove engine brackets from model text
+                                model_text = re.sub(r'\s*\[[^\]]+\]', '', cell_text).strip()
                                 
-                                if not trims:
-                                    trims = ['']
-                                if not engines:
-                                    engines = ['']
+                                # Extract year range: "(2012-2018)" - use first year
+                                year_range_match = re.search(r'\((\d{4})-(\d{4})\)', model_text)
+                                if year_range_match:
+                                    year = year_range_match.group(1)
+                                    model = model_text.strip()
+                                else:
+                                    year = ''
+                                    model = model_text.strip()
                                 
-                                for trim in trims:
-                                    for engine in engines:
-                                        product_data['fitments'].append({
-                                            'year': year,
-                                            'make': make,
-                                            'model': model,
-                                            'trim': str(trim).strip() if trim else '',
-                                            'engine': str(engine).strip() if engine else ''
-                                        })
-                            except:
-                                continue
-                except:
-                    pass
+                                # Extract make from model (first word)
+                                make = 'BMW'
+                                model_without_year = re.sub(r'\s*\(\d{4}-\d{4}\)', '', model).strip()
+                                
+                                if model:
+                                    product_data['fitments'].append({
+                                        'year': year,
+                                        'make': make,
+                                        'model': model,
+                                        'trim': '',
+                                        'engine': engine
+                                    })
+            
+            # Method 4: Extract from description text (e.g., "Fits Model")
+            if not product_data['fitments'] and product_data.get('description'):
+                fits_match = re.search(r'Fits\s+([A-Za-z0-9\s]+)', product_data['description'], re.IGNORECASE)
+                if fits_match:
+                    model_text = fits_match.group(1).strip()
+                    if model_text:
+                        product_data['fitments'].append({
+                            'year': '',
+                            'make': 'BMW',
+                            'model': model_text,
+                            'trim': '',
+                            'engine': ''
+                        })
+            
+            # Fallback: try JSON script tag
+            if not product_data['fitments']:
+                product_data_script = soup.find('script', type='application/json')
+                if product_data_script and product_data_script.string:
+                    try:
+                        product_json = json.loads(product_data_script.string)
+                        fitments = product_json.get('fitment', []) or product_json.get('vehicles', [])
+                        
+                        if fitments:
+                            for fitment_entry in fitments:
+                                try:
+                                    year = str(fitment_entry.get('year', '')).strip()
+                                    make = str(fitment_entry.get('make', '')).strip()
+                                    model = str(fitment_entry.get('model', '')).strip()
+                                    trims = fitment_entry.get('trims', []) or ['']
+                                    engines = fitment_entry.get('engines', []) or ['']
+                                    
+                                    if isinstance(trims, str):
+                                        trims = [t.strip() for t in trims.split(',') if t.strip()]
+                                    elif not isinstance(trims, list):
+                                        trims = ['']
+                                    
+                                    if isinstance(engines, str):
+                                        engines = [e.strip() for e in engines.split(',') if e.strip()]
+                                    elif not isinstance(engines, list):
+                                        engines = ['']
+                                    
+                                    if not trims:
+                                        trims = ['']
+                                    if not engines:
+                                        engines = ['']
+                                    
+                                    for trim in trims:
+                                        for engine in engines:
+                                            product_data['fitments'].append({
+                                                'year': year,
+                                                'make': make,
+                                                'model': model,
+                                                'trim': str(trim).strip() if trim else '',
+                                                'engine': str(engine).strip() if engine else ''
+                                            })
+                                except:
+                                    continue
+                    except:
+                        pass
             
             # If no fitments found, add empty fitment
             if not product_data['fitments']:

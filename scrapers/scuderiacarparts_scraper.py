@@ -11,6 +11,9 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from utils.excel_exporter import ExcelExporter
+from utils.data_processor import DataProcessor
+import os
 
 class ScuderiaCarPartsScraper(BaseScraper):
     """Scraper for scuderiacarparts.com"""
@@ -41,12 +44,74 @@ class ScuderiaCarPartsScraper(BaseScraper):
         
         return product_urls
     
+    def _scrape_and_export_batch(self, urls, batch_number):
+        """
+        Helper method to scrape a batch of URLs and export to Excel
+        """
+        if not urls:
+            return
+        
+        self.logger.info("="*70)
+        self.logger.info(f"Scraping {len(urls)} products (batch #{batch_number})...")
+        self.logger.info("="*70)
+        products = []
+        for idx, url in enumerate(urls, 1):
+            try:
+                self.logger.info(f"[{idx}/{len(urls)}] Scraping: {url[:80]}...")
+                product_data = self.scrape_product(url)
+                if product_data:
+                    if isinstance(product_data, list):
+                        products.extend(product_data)
+                    else:
+                        products.append(product_data)
+                    self.logger.info(f"✓ Successfully scraped: {product_data.get('title', 'Unknown')[:50] if isinstance(product_data, dict) else 'Multiple products'}")
+                else:
+                    self.logger.warning(f"⚠️ Failed to scrape product (returned None)")
+                
+                # Polite delay between products
+                if idx < len(urls):
+                    delay = random.uniform(3, 5)
+                    time.sleep(delay)
+            except Exception as e:
+                self.logger.error(f"❌ Error scraping {url}: {str(e)}")
+                continue
+        
+        # Export Excel with products
+        if products:
+            self.logger.info("="*70)
+            self.logger.info(f"Exporting Excel with {len(products)} products (batch #{batch_number})...")
+            self.logger.info("="*70)
+            try:
+                processor = DataProcessor()
+                df = processor.process_products(products)
+                df = processor.clean_data(df)
+                
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                output_dir = "data/processed"
+                os.makedirs(output_dir, exist_ok=True)
+                output_file = f"{output_dir}/scuderiacarparts_load_{batch_number}_{timestamp}.xlsx"
+                
+                exporter = ExcelExporter()
+                exporter.export_to_excel(df, output_file, apply_formatting=True)
+                self.logger.info(f"✓ Exported {len(df)} rows to {output_file}")
+            except Exception as e:
+                self.logger.error(f"❌ Error exporting products to Excel: {str(e)}")
+                import traceback
+                self.logger.debug(f"Traceback: {traceback.format_exc()}")
+        else:
+            self.logger.warning("⚠️ No products scraped to export")
+    
     def _search_for_wheels(self):
         """
-        Search for wheels using site search - handles "Load more results" button
-        Continuously clicks the button until all products are loaded, then extracts all product URLs
+        Search for wheels using site search with new workflow:
+        1. Load search page
+        2. Click "Load more results" button until all search results are loaded
+        3. After all results are loaded, find all needed product URLs from the entire page
+        4. Collect information (scrape all products)
+        5. Export Excel with all products
         """
-        product_urls = []
+        product_urls = []  # Track all URLs
+        load_more_clicked = 0  # Track how many times we've clicked the load button
         
         try:
             if not self.driver:
@@ -63,17 +128,17 @@ class ScuderiaCarPartsScraper(BaseScraper):
             page_loaded = False
             
             while retry_count < max_retries and not page_loaded:
-            try:
+                try:
                     self.page_load_timeout = 90  # Increased to 90 seconds
                     self.driver.set_page_load_timeout(90)
-                
+                    
                     self.logger.info(f"Attempting to load search page (attempt {retry_count + 1}/{max_retries})...")
-                self.driver.get(search_url)
-                time.sleep(3)  # Wait for initial page load
+                    self.driver.get(search_url)
+                    time.sleep(3)  # Wait for initial page load
                     page_loaded = True
                     self.logger.info("✓ Search page loaded successfully")
-                
-            except Exception as e:
+                    
+                except Exception as e:
                     error_str = str(e).lower()
                     retry_count += 1
                     
@@ -114,13 +179,13 @@ class ScuderiaCarPartsScraper(BaseScraper):
                             time.sleep(wait_time)
                         else:
                             self.logger.error("❌ Failed to load search page after all retries")
-            finally:
-                # Restore original timeout
-                try:
-                    self.page_load_timeout = original_timeout
-                    self.driver.set_page_load_timeout(original_timeout)
-                except:
-                    pass
+                finally:
+                    # Restore original timeout
+                    try:
+                        self.page_load_timeout = original_timeout
+                        self.driver.set_page_load_timeout(original_timeout)
+                    except:
+                        pass
             
             if not page_loaded:
                 self.logger.error("❌ Could not load search page, returning empty product list")
@@ -221,18 +286,43 @@ class ScuderiaCarPartsScraper(BaseScraper):
                         try:
                             containers = self.driver.find_elements(By.CSS_SELECTOR, container_selector)
                             if containers and len(containers) > 0:
-                                return len(containers)
-                        except:
+                                count = len(containers)
+                                if count > 1000:
+                                    self.logger.debug(f"Found {count} containers using selector: {container_selector[:50]}")
+                                return count
+                        except Exception as e:
+                            self.logger.debug(f"Error counting containers with selector {container_selector}: {str(e)[:50]}")
                             continue
                     
-                    # Fallback: Use BeautifulSoup
-                    html = self.driver.page_source
-                    soup = BeautifulSoup(html, 'lxml')
-                    product_containers_bs = soup.find_all('div', class_=re.compile(r'searchresult', re.I))
-                    if not product_containers_bs:
-                        product_containers_bs = soup.find_all(['div', 'article', 'li'], class_=re.compile(r'product|item', re.I))
-                    return len(product_containers_bs)
-                except:
+                    # Fallback: Use BeautifulSoup (but with timeout protection for large pages)
+                    self.logger.debug("Using BeautifulSoup fallback to count containers...")
+                    try:
+                        # Set a timeout for page_source to avoid hanging on very large pages
+                        import signal
+                        def timeout_handler(signum, frame):
+                            raise TimeoutError("page_source operation timed out")
+                        
+                        # For Windows, we can't use signal, so we'll use a different approach
+                        # Just try to get page_source with a warning if it takes too long
+                        start_time = time.time()
+                        html = self.driver.page_source
+                        elapsed = time.time() - start_time
+                        if elapsed > 5:
+                            self.logger.warning(f"⚠️ Getting page_source took {elapsed:.1f}s - page may be very large")
+                        
+                        soup = BeautifulSoup(html, 'lxml')
+                        product_containers_bs = soup.find_all('div', class_=re.compile(r'searchresult', re.I))
+                        if not product_containers_bs:
+                            product_containers_bs = soup.find_all(['div', 'article', 'li'], class_=re.compile(r'product|item', re.I))
+                        count = len(product_containers_bs)
+                        if count > 1000:
+                            self.logger.debug(f"Found {count} containers using BeautifulSoup fallback")
+                        return count
+                    except Exception as e:
+                        self.logger.warning(f"Error in BeautifulSoup fallback: {str(e)[:100]}")
+                        return 0
+                except Exception as e:
+                    self.logger.warning(f"Error counting product containers: {str(e)[:100]}")
                     return 0
             
             # Helper function to extract product URLs from specific container range
@@ -243,9 +333,14 @@ class ScuderiaCarPartsScraper(BaseScraper):
                 """
                 current_urls = []
                 try:
-                    # Wait for loading overlay to disappear
+                    # Wait for loading overlay to disappear (with timeout)
+                    overlay_start = time.time()
                     wait_for_loading_overlay_to_disappear(timeout=5)
-                    time.sleep(1)  # Brief wait for content to stabilize
+                    overlay_elapsed = time.time() - overlay_start
+                    if overlay_elapsed > 3:
+                        self.logger.debug(f"Waiting for overlay took {overlay_elapsed:.1f}s")
+                    
+                    time.sleep(0.5)  # Brief wait for content to stabilize (reduced from 1s)
                     
                     # Find product containers using Selenium first
                     product_container_selectors = [
@@ -256,9 +351,14 @@ class ScuderiaCarPartsScraper(BaseScraper):
                     ]
                     
                     containers_found = False
+                    extraction_start = time.time()
+                    
                     for container_selector in product_container_selectors:
                         try:
+                            selector_start = time.time()
                             containers = self.driver.find_elements(By.CSS_SELECTOR, container_selector)
+                            selector_elapsed = time.time() - selector_start
+                            
                             if containers and len(containers) > 0:
                                 containers_found = True
                                 
@@ -268,10 +368,28 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                 else:
                                     containers_to_process = containers[start_index:end_index]
                                 
-                                self.logger.debug(f"Processing {len(containers_to_process)} NEW containers (indices {start_index} to {len(containers) if end_index is None else end_index})")
+                                num_to_process = len(containers_to_process)
+                                if num_to_process > 100:
+                                    self.logger.info(f"Processing {num_to_process} NEW containers (indices {start_index} to {len(containers) if end_index is None else end_index}) - this may take a moment...")
+                                else:
+                                    self.logger.debug(f"Processing {num_to_process} NEW containers (indices {start_index} to {len(containers) if end_index is None else end_index})")
                                 
-                                for container in containers_to_process:
+                                if selector_elapsed > 2:
+                                    self.logger.debug(f"Finding containers with selector took {selector_elapsed:.1f}s")
+                                
+                                # Process containers with progress logging for large batches
+                                processed = 0
+                                batch_size = 50  # Log progress every 50 containers
+                                
+                                for idx, container in enumerate(containers_to_process):
                                     try:
+                                        # Log progress for large batches
+                                        if num_to_process > 100 and (idx + 1) % batch_size == 0:
+                                            elapsed = time.time() - extraction_start
+                                            rate = (idx + 1) / elapsed if elapsed > 0 else 0
+                                            remaining = (num_to_process - (idx + 1)) / rate if rate > 0 else 0
+                                            self.logger.info(f"  Processing container {idx + 1}/{num_to_process} ({((idx + 1) / num_to_process * 100):.1f}%) - ETA: {remaining:.1f}s")
+                                        
                                         # Extract title
                                         title = ''
                                         try:
@@ -336,8 +454,16 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                                 if not any(exclude in full_url.lower() for exclude in skip_patterns):
                                                     if full_url not in current_urls:
                                                         current_urls.append(full_url)
-                                    except:
+                                                        processed += 1
+                                    except Exception as e:
+                                        # Log errors for debugging but continue
+                                        if idx < 10:  # Only log first few errors to avoid spam
+                                            self.logger.debug(f"Error processing container {idx}: {str(e)[:50]}")
                                         continue
+                                
+                                extraction_elapsed = time.time() - extraction_start
+                                if extraction_elapsed > 5:
+                                    self.logger.info(f"✓ Processed {num_to_process} containers in {extraction_elapsed:.1f}s, found {len(current_urls)} wheel product URLs")
                                 
                                 if current_urls:
                                     break
@@ -346,73 +472,83 @@ class ScuderiaCarPartsScraper(BaseScraper):
                     
                     # Fallback: Use BeautifulSoup if Selenium didn't find containers
                     if not containers_found or len(current_urls) == 0:
-                        html = self.driver.page_source
-                        soup = BeautifulSoup(html, 'lxml')
-                        product_containers_bs = soup.find_all('div', class_=re.compile(r'searchresult', re.I))
-                        if not product_containers_bs:
-                            product_containers_bs = soup.find_all(['div', 'article', 'li'], class_=re.compile(r'product|item', re.I))
-                        
-                        # Only process containers from start_index onwards
-                        if end_index is None:
-                            containers_to_process = product_containers_bs[start_index:]
-                        else:
-                            containers_to_process = product_containers_bs[start_index:end_index]
-                        
-                        for container in containers_to_process:
-                            try:
-                                title = ''
-                                name_div = container.find('div', class_='mt-md')
-                                if name_div:
-                                    name_strong = name_div.find('strong')
-                                    if name_strong:
-                                        product_name = name_strong.get_text(strip=True)
-                                        desc_divs = container.find_all('div', class_=re.compile(r'mt-xs.*text-sm', re.I))
-                                        description = ''
-                                        for desc_div in desc_divs:
-                                            desc_text = desc_div.get_text(strip=True)
-                                            if desc_text and not any(label in desc_text.upper() for label in ['TO ORDER', 'IN STOCK']):
-                                                if not desc_div.find('span', class_='label'):
-                                                    description = desc_text
-                                                    break
-                                        
-                                        if description:
-                                            title = f"{product_name} {description}".strip()
-                                        else:
-                                            title = product_name
-                                
-                                if title and len(title) >= 3 and self.is_wheel_product(title):
-                                    link = container.find('a', href=True)
-                                    if link:
-                                        href = link.get('href', '')
-                                        if href and href != 'javascript:void(0)' and href != '#':
-                                            full_url = href if href.startswith('http') else f"{self.base_url}{href}"
-                                            if '#' in full_url:
-                                                full_url = full_url.split('#')[0]
-                                            if '?' in full_url:
-                                                full_url = full_url.split('?')[0]
-                                            full_url = full_url.rstrip('/')
+                        self.logger.debug("Using BeautifulSoup fallback for URL extraction...")
+                        try:
+                            # Get page_source with timeout protection
+                            page_source_start = time.time()
+                            html = self.driver.page_source
+                            page_source_elapsed = time.time() - page_source_start
+                            if page_source_elapsed > 10:
+                                self.logger.warning(f"⚠️ Getting page_source took {page_source_elapsed:.1f}s - page is very large, consider stopping URL collection")
+                            
+                            soup = BeautifulSoup(html, 'lxml')
+                            product_containers_bs = soup.find_all('div', class_=re.compile(r'searchresult', re.I))
+                            if not product_containers_bs:
+                                product_containers_bs = soup.find_all(['div', 'article', 'li'], class_=re.compile(r'product|item', re.I))
+                            
+                            # Only process containers from start_index onwards
+                            if end_index is None:
+                                containers_to_process = product_containers_bs[start_index:]
+                            else:
+                                containers_to_process = product_containers_bs[start_index:end_index]
+                            
+                            num_to_process = len(containers_to_process)
+                            if num_to_process > 100:
+                                self.logger.info(f"Processing {num_to_process} containers with BeautifulSoup fallback...")
+                            
+                            for idx, container in enumerate(containers_to_process):
+                                try:
+                                    title = ''
+                                    name_div = container.find('div', class_='mt-md')
+                                    if name_div:
+                                        name_strong = name_div.find('strong')
+                                        if name_strong:
+                                            product_name = name_strong.get_text(strip=True)
+                                            desc_divs = container.find_all('div', class_=re.compile(r'mt-xs.*text-sm', re.I))
+                                            description = ''
+                                            for desc_div in desc_divs:
+                                                desc_text = desc_div.get_text(strip=True)
+                                                if desc_text and not any(label in desc_text.upper() for label in ['TO ORDER', 'IN STOCK']):
+                                                    if not desc_div.find('span', class_='label'):
+                                                        description = desc_text
+                                                        break
                                             
-                                            if full_url not in current_urls:
-                                                current_urls.append(full_url)
-                            except:
-                                continue
+                                            if description:
+                                                title = f"{product_name} {description}".strip()
+                                            else:
+                                                title = product_name
+                                    
+                                    if title and len(title) >= 3 and self.is_wheel_product(title):
+                                        link = container.find('a', href=True)
+                                        if link:
+                                            href = link.get('href', '')
+                                            if href and href != 'javascript:void(0)' and href != '#':
+                                                full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                                                if '#' in full_url:
+                                                    full_url = full_url.split('#')[0]
+                                                if '?' in full_url:
+                                                    full_url = full_url.split('?')[0]
+                                                full_url = full_url.rstrip('/')
+                                                
+                                                if full_url not in current_urls:
+                                                    current_urls.append(full_url)
+                                except Exception as e:
+                                    if idx < 10:  # Only log first few errors
+                                        self.logger.debug(f"Error processing container {idx} in BeautifulSoup fallback: {str(e)[:50]}")
+                                    continue
+                        except Exception as e:
+                            self.logger.warning(f"Error in BeautifulSoup fallback: {str(e)[:100]}")
                 
                 except Exception as e:
-                    self.logger.debug(f"Error extracting URLs from containers: {str(e)[:50]}")
+                    self.logger.warning(f"Error extracting URLs from containers: {str(e)[:100]}")
                 
                 return current_urls
             
-            # NEW APPROACH: Collect URLs incrementally - only NEW products after each click
-            # Step 1: Collect product URLs from initial page (all containers from index 0)
-            self.logger.info("Step 1: Collecting product URLs from initial page...")
-            initial_urls = extract_urls_from_containers(start_index=0)
-            product_urls.extend(initial_urls)
-            previous_container_count = count_product_containers()
-            self.logger.info(f"✓ Collected {len(initial_urls)} product URLs from initial page (Total: {len(product_urls)}, Containers: {previous_container_count})")
-            
-            # Step 2: Click "Load more results" button and collect new URLs repeatedly
-            self.logger.info("Step 2: Clicking 'Load more results' button and collecting new URLs incrementally...")
-            load_more_clicked = 0
+            # NEW WORKFLOW: Load all results first, then scrape and export
+            # Step 1: Click "Load more results" button until all search results are loaded
+            self.logger.info("="*70)
+            self.logger.info("STEP 1: Clicking 'Load more results' button until all results are loaded...")
+            self.logger.info("="*70)
             consecutive_no_button = 0
             max_consecutive_no_button = 3  # Stop after 3 consecutive attempts with no button
             max_iterations = 100  # Safety limit to prevent infinite loops
@@ -423,7 +559,7 @@ class ScuderiaCarPartsScraper(BaseScraper):
                 try:
                     # CRITICAL: Wait for loading overlay to disappear before trying to click
                     wait_for_loading_overlay_to_disappear(timeout=5)
-                    
+                        
                     # Try multiple selectors for the "Load more results" button
                     load_more_selectors = [
                         "button:contains('Load more results')",
@@ -438,13 +574,13 @@ class ScuderiaCarPartsScraper(BaseScraper):
                         "a[class*='load']",
                         "button[data-action='load-more']",
                         "a[data-action='load-more']",
-                        "#load_more_results",  # Based on error message: id="load_more_results"
+                        "#load_more_results",
                         "a#load_more_results",
                     ]
                     
                     load_more_button = None
                     
-                    # First, try to find by ID (most specific - from error message)
+                    # First, try to find by ID (most specific)
                     try:
                         load_more_button = self.driver.find_element(By.ID, "load_more_results")
                     except NoSuchElementException:
@@ -452,24 +588,24 @@ class ScuderiaCarPartsScraper(BaseScraper):
                     
                     # If not found by ID, try by text content
                     if not load_more_button:
-                    try:
-                        # Use XPath to find button/link containing "Load more" text (case-insensitive)
-                        load_more_button = self.driver.find_element(
-                            By.XPATH, 
-                            "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'load more')] | //a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'load more')]"
-                        )
-                    except NoSuchElementException:
-                        # Try CSS selectors
-                        for selector in load_more_selectors:
-                            try:
-                                if selector.startswith("button:") or selector.startswith("a:"):
-                                    # These are jQuery-style selectors, skip for now
+                        try:
+                            # Use XPath to find button/link containing "Load more" text (case-insensitive)
+                            load_more_button = self.driver.find_element(
+                                By.XPATH, 
+                                "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'load more')] | //a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'load more')]"
+                            )
+                        except NoSuchElementException:
+                            # Try CSS selectors
+                            for selector in load_more_selectors:
+                                try:
+                                    if selector.startswith("button:") or selector.startswith("a:"):
+                                        # These are jQuery-style selectors, skip for now
+                                        continue
+                                    load_more_button = self.driver.find_element(By.CSS_SELECTOR, selector)
+                                    if load_more_button:
+                                        break
+                                except NoSuchElementException:
                                     continue
-                                load_more_button = self.driver.find_element(By.CSS_SELECTOR, selector)
-                                if load_more_button:
-                                    break
-                            except NoSuchElementException:
-                                continue
                     
                     if load_more_button:
                         # Check if button is visible and enabled
@@ -507,33 +643,6 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                 self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
                                 time.sleep(1)
                                 
-                                # NOW: Collect ONLY NEW product URLs from newly loaded containers
-                                # Only extract from containers starting from previous_container_count (skip old containers)
-                                current_container_count = count_product_containers()
-                                self.logger.info(f"Collecting NEW product URLs after click #{load_more_clicked} (containers {previous_container_count} to {current_container_count})...")
-                                
-                                # Only process NEW containers (from previous_container_count onwards)
-                                new_urls = extract_urls_from_containers(start_index=previous_container_count)
-                                
-                                # Add only the new URLs
-                                new_urls_count = len(new_urls)
-                                product_urls.extend(new_urls)
-                                
-                                # Update container count for next iteration
-                                previous_container_count = current_container_count
-                                
-                                self.logger.info(f"✓ Found {new_urls_count} NEW product URLs after click #{load_more_clicked} (Total: {len(product_urls)}, Containers: {current_container_count})")
-                                
-                                # If no new URLs were found, we might have reached the end
-                                if new_urls_count == 0:
-                                    self.logger.info("No new URLs found after clicking - may have reached end of results")
-                                    consecutive_no_button += 1
-                                    if consecutive_no_button >= 2:  # Give it one more try
-                                        self.logger.info("No new URLs for 2 consecutive clicks - stopping")
-                                        break
-                                else:
-                                    consecutive_no_button = 0  # Reset counter if we found new URLs
-                                
                             except Exception as click_error:
                                 error_str = str(click_error).lower()
                                 if 'click intercepted' in error_str or 'loadingoverlay' in error_str:
@@ -549,22 +658,6 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                         time.sleep(1)
                                         wait_for_loading_overlay_to_disappear(timeout=10)
                                         time.sleep(2)
-                                        
-                                        # Collect ONLY NEW URLs from newly loaded containers
-                                        current_container_count = count_product_containers()
-                                        new_urls = extract_urls_from_containers(start_index=previous_container_count)
-                                        new_urls_count = len(new_urls)
-                                        product_urls.extend(new_urls)
-                                        previous_container_count = current_container_count
-                                        
-                                        self.logger.info(f"✓ Found {new_urls_count} NEW product URLs after click #{load_more_clicked} (Total: {len(product_urls)}, Containers: {current_container_count})")
-                                        
-                                        if new_urls_count == 0:
-                                            consecutive_no_button += 1
-                                            if consecutive_no_button >= 2:
-                                                break
-                                        else:
-                                            consecutive_no_button = 0
                                     except:
                                         # If still fails, try JavaScript click
                                         try:
@@ -575,61 +668,29 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                             time.sleep(1)
                                             wait_for_loading_overlay_to_disappear(timeout=10)
                                             time.sleep(2)
-                                            
-                                            # Collect ONLY NEW URLs from newly loaded containers
-                                            current_container_count = count_product_containers()
-                                            new_urls = extract_urls_from_containers(start_index=previous_container_count)
-                                            new_urls_count = len(new_urls)
-                                            product_urls.extend(new_urls)
-                                            previous_container_count = current_container_count
-                                            
-                                            self.logger.info(f"✓ Found {new_urls_count} NEW product URLs after click #{load_more_clicked} (Total: {len(product_urls)}, Containers: {current_container_count})")
-                                            
-                                            if new_urls_count == 0:
-                                                consecutive_no_button += 1
-                                                if consecutive_no_button >= 2:
-                                                    break
-                                            else:
-                                                consecutive_no_button = 0
                                         except Exception as js_click_error:
                                             self.logger.warning(f"JavaScript click also failed: {str(js_click_error)}")
                                             consecutive_no_button += 1
                                             if consecutive_no_button >= max_consecutive_no_button:
                                                 self.logger.info("No more 'Load more results' button found or button not clickable")
-                                            break
+                                                break
                                 else:
-                                self.logger.warning(f"Error clicking load more button: {str(click_error)}")
-                                # Try JavaScript click as fallback
-                                try:
-                                    self.driver.execute_script("arguments[0].click();", load_more_button)
-                                    load_more_clicked += 1
-                                    consecutive_no_button = 0
-                                    self.logger.info(f"✓ Clicked 'Load more results' button via JavaScript (click #{load_more_clicked})")
+                                    self.logger.warning(f"Error clicking load more button: {str(click_error)}")
+                                    # Try JavaScript click as fallback
+                                    try:
+                                        self.driver.execute_script("arguments[0].click();", load_more_button)
+                                        load_more_clicked += 1
+                                        consecutive_no_button = 0
+                                        self.logger.info(f"✓ Clicked 'Load more results' button via JavaScript (click #{load_more_clicked})")
                                         time.sleep(1)
                                         wait_for_loading_overlay_to_disappear(timeout=10)
                                         time.sleep(2)
-                                        
-                                        # Collect ONLY NEW URLs from newly loaded containers
-                                        current_container_count = count_product_containers()
-                                        new_urls = extract_urls_from_containers(start_index=previous_container_count)
-                                        new_urls_count = len(new_urls)
-                                        product_urls.extend(new_urls)
-                                        previous_container_count = current_container_count
-                                        
-                                        self.logger.info(f"✓ Found {new_urls_count} NEW product URLs after click #{load_more_clicked} (Total: {len(product_urls)}, Containers: {current_container_count})")
-                                        
-                                        if new_urls_count == 0:
-                                            consecutive_no_button += 1
-                                            if consecutive_no_button >= 2:
-                                                break
-                                        else:
-                                            consecutive_no_button = 0
-                                except Exception as js_click_error:
-                                    self.logger.warning(f"JavaScript click also failed: {str(js_click_error)}")
-                                    consecutive_no_button += 1
-                                    if consecutive_no_button >= max_consecutive_no_button:
-                                        self.logger.info("No more 'Load more results' button found or button not clickable")
-                                    break
+                                    except Exception as js_click_error:
+                                        self.logger.warning(f"JavaScript click also failed: {str(js_click_error)}")
+                                        consecutive_no_button += 1
+                                        if consecutive_no_button >= max_consecutive_no_button:
+                                            self.logger.info("No more 'Load more results' button found or button not clickable")
+                                            break
                         else:
                             # Button exists but not visible/enabled - likely all products loaded
                             self.logger.info("'Load more results' button found but not visible/enabled - all products likely loaded")
@@ -650,37 +711,95 @@ class ScuderiaCarPartsScraper(BaseScraper):
                     self.logger.warning(f"Error while handling 'Load more results' button: {str(e)}")
                     consecutive_no_button += 1
                     if consecutive_no_button >= max_consecutive_no_button:
-                            break
+                        break
                     time.sleep(1)
+            
+            self.logger.info(f"✓ Finished clicking 'Load more results' button ({load_more_clicked} clicks total)")
+            self.logger.info("="*70)
+            
+            # Step 2: After all results are loaded, extract ALL product URLs from the entire page
+            self.logger.info("STEP 2: Extracting all product URLs from the entire page...")
+            self.logger.info("="*70)
+            
+            # Wait for any final loading to complete
+            wait_for_loading_overlay_to_disappear(timeout=5)
+            time.sleep(2)  # Brief wait for page to stabilize
+            
+            # Extract ALL URLs from all containers (start_index=0, end_index=None)
+            all_product_urls = extract_urls_from_containers(start_index=0)
+            product_urls = list(set(all_product_urls))  # Remove duplicates
+            
+            total_containers = count_product_containers()
+            self.logger.info(f"✓ Extracted {len(product_urls)} unique product URLs from {total_containers} containers")
+            
+            if not product_urls:
+                self.logger.warning("⚠️ No product URLs found on search page")
+                return product_urls
+            
+            # Step 3: Scrape all products
+            self.logger.info("="*70)
+            self.logger.info(f"STEP 3: Scraping {len(product_urls)} products...")
+            self.logger.info("="*70)
+            all_products = []
+            for idx, url in enumerate(product_urls, 1):
+                try:
+                    self.logger.info(f"[{idx}/{len(product_urls)}] Scraping: {url[:80]}...")
+                    product_data = self.scrape_product(url)
+                    if product_data:
+                        if isinstance(product_data, list):
+                            all_products.extend(product_data)
+                        else:
+                            all_products.append(product_data)
+                        self.logger.info(f"✓ Successfully scraped: {product_data.get('title', 'Unknown')[:50] if isinstance(product_data, dict) else 'Multiple products'}")
+                    else:
+                        self.logger.warning(f"⚠️ Failed to scrape product (returned None)")
                     
-            self.logger.info(f"Finished clicking 'Load more results' button ({load_more_clicked} clicks total)")
-            self.logger.info(f"Final total: {len(product_urls)} unique product URLs collected")
+                    # Polite delay between products
+                    if idx < len(product_urls):
+                        delay = random.uniform(3, 5)
+                        time.sleep(delay)
+                except Exception as e:
+                    self.logger.error(f"❌ Error scraping {url}: {str(e)}")
+                    continue
             
-            # Final collection pass to ensure we didn't miss anything (only NEW containers)
-            self.logger.info("Performing final collection pass to ensure all URLs are captured...")
-            current_container_count = count_product_containers()
-            final_urls = extract_urls_from_containers(start_index=previous_container_count)
-            final_new_count = len(final_urls)
-            product_urls.extend(final_urls)
-            
-            if final_new_count > 0:
-                self.logger.info(f"✓ Found {final_new_count} additional NEW URLs in final pass (Total: {len(product_urls)}, Containers: {current_container_count})")
-            
-            # All URLs have been collected incrementally, no need for the old extraction code
-            # The product_urls list already contains all collected URLs
-            
-            if product_urls and len(product_urls) > 0:
-                self.logger.info(f"✓ Found {len(product_urls)} wheel product URLs by incremental collection")
-                self.logger.info(f"Sample wheel product URLs: {product_urls[:5]}")
+            # Step 4: Export Excel with all products
+            if all_products:
+                self.logger.info("="*70)
+                self.logger.info(f"STEP 4: Exporting Excel with {len(all_products)} products...")
+                self.logger.info("="*70)
+                try:
+                    processor = DataProcessor()
+                    df = processor.process_products(all_products)
+                    df = processor.clean_data(df)
+                    
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    output_dir = "data/processed"
+                    os.makedirs(output_dir, exist_ok=True)
+                    output_file = f"{output_dir}/scuderiacarparts_all_{timestamp}.xlsx"
+                    
+                    exporter = ExcelExporter()
+                    exporter.export_to_excel(df, output_file, apply_formatting=True)
+                    self.logger.info(f"✓ Exported {len(df)} rows to {output_file}")
+                except Exception as e:
+                    self.logger.error(f"❌ Error exporting products to Excel: {str(e)}")
+                    import traceback
+                    self.logger.debug(f"Traceback: {traceback.format_exc()}")
             else:
-                self.logger.warning("⚠️ No wheel product URLs found!")
+                self.logger.warning("⚠️ No products scraped to export")
+            
+            self.logger.info("="*70)
+            self.logger.info("SCRAPING AND EXPORT COMPLETE!")
+            self.logger.info("="*70)
+            self.logger.info(f"✓ Processed {load_more_clicked} load button clicks")
+            self.logger.info(f"✓ Scraped {len(all_products)} products")
+            self.logger.info("✓ All products exported to Excel file")
             
         except Exception as e:
             self.logger.error(f"Error searching for wheels: {str(e)}")
             import traceback
             self.logger.debug(f"Traceback: {traceback.format_exc()}")
         
-        # Always return product_urls (even if empty) so calling code can proceed
+        # Return all product URLs
         self.logger.info(f"Returning {len(product_urls)} product URLs from _search_for_wheels()")
         return product_urls
     
@@ -1107,7 +1226,7 @@ class ScuderiaCarPartsScraper(BaseScraper):
                 
                 # Fallback: try h1 with class 'product-title'
                 if not product_data['title']:
-                title_elem = soup.find('h1', class_='product-title')
+                    title_elem = soup.find('h1', class_='product-title')
                     if title_elem:
                         product_data['title'] = title_elem.get_text(strip=True)
                 
@@ -1189,12 +1308,12 @@ class ScuderiaCarPartsScraper(BaseScraper):
                 
                 # Fallback: try other common selectors
                 if not product_data['sku']:
-                sku_elem = (soup.find('span', class_=re.compile(r'sku|part.*number|part-number', re.I)) or
-                           soup.find('div', class_=re.compile(r'sku|part.*number|part-number', re.I)) or
-                           soup.find('span', class_='sku-display') or
-                           soup.find('span', id=re.compile(r'sku|part.*number', re.I)) or
-                           soup.find('div', id=re.compile(r'sku|part.*number', re.I)))
-                if sku_elem:
+                    sku_elem = (soup.find('span', class_=re.compile(r'sku|part.*number|part-number', re.I)) or
+                               soup.find('div', class_=re.compile(r'sku|part.*number|part-number', re.I)) or
+                               soup.find('span', class_='sku-display') or
+                               soup.find('span', id=re.compile(r'sku|part.*number', re.I)) or
+                               soup.find('div', id=re.compile(r'sku|part.*number', re.I)))
+                    if sku_elem:
                         raw_text = sku_elem.get_text(strip=True)
                         part_number = extract_part_number(raw_text)
                         if part_number:
@@ -1266,13 +1385,13 @@ class ScuderiaCarPartsScraper(BaseScraper):
                 
                 # Fallback: try other common selectors
                 if not product_data['actual_price']:
-                sale_price_elem = (soup.find('span', class_=re.compile(r'sale.*price|price.*sale|current.*price', re.I)) or
-                                 soup.find('div', class_=re.compile(r'sale.*price|price.*sale|current.*price', re.I)) or
-                                 soup.find('strong', class_=re.compile(r'sale.*price|price.*sale', re.I)) or
-                                 soup.find('span', class_='sale-price') or
-                                 soup.find('span', class_='price') or
-                                 soup.find('div', class_='price'))
-                if sale_price_elem:
+                    sale_price_elem = (soup.find('span', class_=re.compile(r'sale.*price|price.*sale|current.*price', re.I)) or
+                                     soup.find('div', class_=re.compile(r'sale.*price|price.*sale|current.*price', re.I)) or
+                                     soup.find('strong', class_=re.compile(r'sale.*price|price.*sale', re.I)) or
+                                     soup.find('span', class_='sale-price') or
+                                     soup.find('span', class_='price') or
+                                     soup.find('div', class_='price'))
+                    if sale_price_elem:
                         price_text = sale_price_elem.get_text(strip=True)
                         # Check if price contains EUR symbol
                         if '€' in price_text or 'EUR' in price_text.upper():
@@ -1338,10 +1457,10 @@ class ScuderiaCarPartsScraper(BaseScraper):
                 
                 # Fallback: try other common selectors
                 if not img_elem:
-                img_elem = (soup.find('img', class_=re.compile(r'product.*image|main.*image', re.I)) or
-                          soup.find('img', id=re.compile(r'product.*image|main.*image', re.I)) or
-                          soup.find('img', class_='product-main-image') or
-                          soup.find('img', class_='product-image') or
+                    img_elem = (soup.find('img', class_=re.compile(r'product.*image|main.*image', re.I)) or
+                              soup.find('img', id=re.compile(r'product.*image|main.*image', re.I)) or
+                              soup.find('img', class_='product-main-image') or
+                              soup.find('img', class_='product-image') or
                               (soup.find('div', class_=re.compile(r'product.*image', re.I)).find('img') if soup.find('div', class_=re.compile(r'product.*image', re.I)) else None))
                 
                 if img_elem:
@@ -1724,6 +1843,53 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                          soup.find('div', {'data-tab-content': 'fitment'}))
                         
                         if fitment_div:
+                            # Helper function to expand year ranges into individual years
+                            def expand_year_range(model_text, year_start, year_end, make, engine):
+                                """
+                                Expand a year range into individual fitment entries.
+                                Example: "Bentayga (2015-2020)" -> 6 entries:
+                                - Year: 2015, Model: "Bentayga 2015"
+                                - Year: 2016, Model: "Bentayga 2016"
+                                - ... etc
+                                """
+                                expanded_fitments = []
+                                
+                                try:
+                                    start_year = int(year_start)
+                                    end_year = int(year_end)
+                                    
+                                    # Remove year range from model name to get base model
+                                    base_model = re.sub(r'\s*\(\d{4}-\d{4}\)', '', model_text).strip()
+                                    
+                                    # Create one fitment entry for each year in the range
+                                    for year in range(start_year, end_year + 1):
+                                        year_str = str(year)
+                                        # Model format: "Bentayga 2015", "Bentayga 2016", etc.
+                                        model_with_year = f"{base_model} {year_str}"
+                                        
+                                        fitment_entry = {
+                                            'year': year_str,
+                                            'make': make,
+                                            'model': model_with_year,
+                                            'trim': '',
+                                            'engine': engine
+                                        }
+                                        expanded_fitments.append(fitment_entry)
+                                    
+                                    self.logger.debug(f"Expanded {model_text} ({year_start}-{year_end}) into {len(expanded_fitments)} fitment entries")
+                                except (ValueError, TypeError) as e:
+                                    self.logger.debug(f"Error expanding year range: {str(e)}")
+                                    # Fallback: return single entry with original model
+                                    expanded_fitments.append({
+                                        'year': year_start,
+                                        'make': make,
+                                        'model': model_text.strip(),
+                                        'trim': '',
+                                        'engine': engine
+                                    })
+                                
+                                return expanded_fitments
+                            
                             # Find table within fitment div
                             fitment_table = fitment_div.find('table')
                             if fitment_table:
@@ -1740,9 +1906,8 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                             cell_text = first_cell.get_text(strip=True)
                                             
                                             # Parse format: "Range Rover Evoque (2012-2018) [2.0 Turbo Diesel]" or "Bentayga (2015-2020)"
-                                            # Model should be: "Range Rover Evoque (2012-2018)" or "Bentayga (2015-2020)" (keep full string with year range)
                                             # Engine should be: "2.0 Turbo Diesel" (extracted from brackets, if present)
-                                            # Year should be: "2012" (extracted from year range start)
+                                            # Year range should be expanded into individual years
                                             # Make should be extracted from model string if possible
                                             
                                             # Pattern: text with optional (year range) followed by [engine]
@@ -1759,65 +1924,112 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                             if year_range_match:
                                                 year_start = year_range_match.group(1)
                                                 year_end = year_range_match.group(2)
-                                                # Use start year as primary year
-                                                year = year_start
-                                                # Keep the full model string with year range: "Range Rover Evoque (2012-2018)"
-                                                model = model_text.strip()
+                                                
+                                                # Extract make from model string (before expanding year range)
+                                                make = ''
+                                                # Remove year range from model for make extraction
+                                                model_without_year = re.sub(r'\s*\(\d{4}-\d{4}\)', '', model_text).strip()
+                                                model_words = model_without_year.split()
+                                                
+                                                if len(model_words) >= 2:
+                                                    # Common patterns: "Land Rover Range Rover Evoque", "Range Rover Evoque"
+                                                    if model_words[0].lower() == 'land' and len(model_words) > 1:
+                                                        make = f"{model_words[0]} {model_words[1]}"
+                                                    elif model_words[0].lower() == 'range' and len(model_words) > 1 and model_words[1].lower() == 'rover':
+                                                        make = "Range Rover"
+                                                    else:
+                                                        make = model_words[0]
+                                                        if len(model_words) > 1:
+                                                            if model_words[1].lower() in ['rover', 'motor', 'motors', 'automotive']:
+                                                                make = f"{model_words[0]} {model_words[1]}"
+                                                
+                                                # Expand year range into individual fitment entries
+                                                expanded_fitments = expand_year_range(model_text, year_start, year_end, make, engine)
+                                                
+                                                # Add all expanded fitments
+                                                for fitment_entry in expanded_fitments:
+                                                    if fitment_entry not in product_data['fitments']:
+                                                        product_data['fitments'].append(fitment_entry)
+                                                        self.logger.debug(f"Extracted fitment: {fitment_entry['model']} ({fitment_entry['year']}) [{engine}]")
                                             else:
+                                                # No year range - single year or no year
                                                 year = ''
                                                 model = model_text.strip()
-                                            
-                                            # Extract make from model string
-                                            # For "Range Rover Evoque (2012-2018)", try to extract make
-                                            # Common patterns: "Land Rover Range Rover Evoque", "Range Rover Evoque"
-                                            make = ''
-                                            # Remove year range from model for make extraction
-                                            model_without_year = re.sub(r'\s*\(\d{4}-\d{4}\)', '', model).strip()
-                                            model_words = model_without_year.split()
-                                            
-                                            if len(model_words) >= 2:
-                                                # Common patterns: "Land Rover Range Rover Evoque", "Range Rover Evoque"
-                                                if model_words[0].lower() == 'land' and len(model_words) > 1:
-                                                    # "Land Rover Range Rover Evoque" -> make: "Land Rover", model: "Range Rover Evoque (2012-2018)"
-                                                    make = f"{model_words[0]} {model_words[1]}"
-                                                elif model_words[0].lower() == 'range' and len(model_words) > 1 and model_words[1].lower() == 'rover':
-                                                    # "Range Rover Evoque" -> make: "Range Rover" or "Land Rover" (heuristic)
-                                                    # Try to determine if it's "Land Rover" brand or "Range Rover" model
-                                                    # For now, use "Range Rover" as make, but keep full model string
-                                                    make = "Range Rover"  # Could also be "Land Rover" depending on context
-                                                else:
-                                                    # Try first word or two as make
-                                                    make = model_words[0]
-                                                    if len(model_words) > 1:
-                                                        # Check if second word is part of make (e.g., "Range Rover")
-                                                        if model_words[1].lower() in ['rover', 'motor', 'motors', 'automotive']:
-                                                            make = f"{model_words[0]} {model_words[1]}"
-                                            
-                                            # Keep the full model string with year range as model
-                                            # Model is already set above: "Range Rover Evoque (2012-2018)"
                                                 
-                                            # Only add if we have at least model
-                                            if model:
+                                                # Extract make from model string
+                                                make = ''
+                                                model_words = model_text.split()
+                                                
+                                                if len(model_words) >= 2:
+                                                    if model_words[0].lower() == 'land' and len(model_words) > 1:
+                                                        make = f"{model_words[0]} {model_words[1]}"
+                                                    elif model_words[0].lower() == 'range' and len(model_words) > 1 and model_words[1].lower() == 'rover':
+                                                        make = "Range Rover"
+                                                    else:
+                                                        make = model_words[0]
+                                                        if len(model_words) > 1:
+                                                            if model_words[1].lower() in ['rover', 'motor', 'motors', 'automotive']:
+                                                                make = f"{model_words[0]} {model_words[1]}"
+                                                
+                                                # Only add if we have at least model
+                                                if model:
                                                     fitment_entry = {
                                                         'year': year,
                                                         'make': make,
                                                         'model': model,
-                                                    'trim': '',
+                                                        'trim': '',
                                                         'engine': engine
                                                     }
                                                     # Check if this fitment is already added
                                                     if fitment_entry not in product_data['fitments']:
                                                         product_data['fitments'].append(fitment_entry)
-                                                self.logger.debug(f"Extracted fitment: {model} ({year}) [{engine}]")
-                                            except Exception as e:
-                                                self.logger.debug(f"Error parsing fitment row: {str(e)}")
-                                                continue
+                                                    self.logger.debug(f"Extracted fitment: {model} ({year}) [{engine}]")
+                                        except Exception as e:
+                                            self.logger.debug(f"Error parsing fitment row: {str(e)}")
+                                            continue
                                 
                             # If no table found, try to find fitment text in other elements
                             if not product_data['fitments']:
-                                # Define patterns for parsing
-                                model_pattern = r'^(.+?)(?:\s*\[|$)'
-                                engine_pattern = r'\[([^\]]+)\]'
+                                # Helper function to expand year ranges (same as above)
+                                def expand_year_range_fallback(model_text, year_start, year_end, make, engine):
+                                    """Expand a year range into individual fitment entries (fallback version)."""
+                                    expanded_fitments = []
+                                    
+                                    try:
+                                        start_year = int(year_start)
+                                        end_year = int(year_end)
+                                        
+                                        # Remove year range from model name to get base model
+                                        base_model = re.sub(r'\s*\(\d{4}-\d{4}\)', '', model_text).strip()
+                                        
+                                        # Create one fitment entry for each year in the range
+                                        for year in range(start_year, end_year + 1):
+                                            year_str = str(year)
+                                            # Model format: "Bentayga 2015", "Bentayga 2016", etc.
+                                            model_with_year = f"{base_model} {year_str}"
+                                            
+                                            fitment_entry = {
+                                                'year': year_str,
+                                                'make': make,
+                                                'model': model_with_year,
+                                                'trim': '',
+                                                'engine': engine
+                                            }
+                                            expanded_fitments.append(fitment_entry)
+                                        
+                                        self.logger.debug(f"Expanded {model_text} ({year_start}-{year_end}) into {len(expanded_fitments)} fitment entries (fallback)")
+                                    except (ValueError, TypeError) as e:
+                                        self.logger.debug(f"Error expanding year range (fallback): {str(e)}")
+                                        # Fallback: return single entry with original model
+                                        expanded_fitments.append({
+                                            'year': year_start,
+                                            'make': make,
+                                            'model': model_text.strip(),
+                                            'trim': '',
+                                            'engine': engine
+                                        })
+                                    
+                                    return expanded_fitments
                                 
                                 # Look for any text that matches the pattern
                                 fitment_texts = fitment_div.find_all(string=re.compile(r'\(20\d{2}-20\d{2}\)|\[.*\]'))
@@ -1837,45 +2049,67 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                             year_range_match = re.search(r'\((\d{4})-(\d{4})\)', model_text)
                                             if year_range_match:
                                                 year_start = year_range_match.group(1)
-                                                year = year_start
-                                                # Keep the full model string with year range
-                                                model = model_text.strip()
+                                                year_end = year_range_match.group(2)
+                                                
+                                                # Extract make from model string (before expanding year range)
+                                                make = ''
+                                                model_without_year = re.sub(r'\s*\(\d{4}-\d{4}\)', '', model_text).strip()
+                                                model_words = model_without_year.split()
+                                                
+                                                if len(model_words) >= 2:
+                                                    if model_words[0].lower() == 'land' and len(model_words) > 1:
+                                                        make = f"{model_words[0]} {model_words[1]}"
+                                                    elif model_words[0].lower() == 'range' and len(model_words) > 1 and model_words[1].lower() == 'rover':
+                                                        make = "Range Rover"
+                                                    else:
+                                                        make = model_words[0]
+                                                        if len(model_words) > 1:
+                                                            if model_words[1].lower() in ['rover', 'motor', 'motors', 'automotive']:
+                                                                make = f"{model_words[0]} {model_words[1]}"
+                                                
+                                                # Expand year range into individual fitment entries
+                                                expanded_fitments = expand_year_range_fallback(model_text, year_start, year_end, make, engine)
+                                                
+                                                # Add all expanded fitments
+                                                for fitment_entry in expanded_fitments:
+                                                    if fitment_entry not in product_data['fitments']:
+                                                        product_data['fitments'].append(fitment_entry)
                                             else:
+                                                # No year range - single year or no year
                                                 year = ''
                                                 model = model_text.strip()
-                                            
-                                            # Extract make from model string (same logic as above)
-                                            make = ''
-                                            model_without_year = re.sub(r'\s*\(\d{4}-\d{4}\)', '', model).strip()
-                                            model_words = model_without_year.split()
-                                            
-                                            if len(model_words) >= 2:
-                                                if model_words[0].lower() == 'land' and len(model_words) > 1:
-                                                    make = f"{model_words[0]} {model_words[1]}"
-                                                elif model_words[0].lower() == 'range' and len(model_words) > 1 and model_words[1].lower() == 'rover':
-                                                    make = "Range Rover"
-                                                else:
-                                                    make = model_words[0]
-                                                    if len(model_words) > 1:
-                                                        if model_words[1].lower() in ['rover', 'motor', 'motors', 'automotive']:
-                                                            make = f"{model_words[0]} {model_words[1]}"
-                                            
-                                            if model:
-                                                        fitment_entry = {
-                                                            'year': year,
-                                                            'make': make,
-                                                    'model': model,  # Keep full model string with year range
-                                                            'trim': '',
-                                                    'engine': engine
-                                                        }
-                                                        if fitment_entry not in product_data['fitments']:
-                                                            product_data['fitments'].append(fitment_entry)
-                                                except:
-                                continue
+                                                
+                                                # Extract make from model string
+                                                make = ''
+                                                model_words = model_text.split()
+                                                
+                                                if len(model_words) >= 2:
+                                                    if model_words[0].lower() == 'land' and len(model_words) > 1:
+                                                        make = f"{model_words[0]} {model_words[1]}"
+                                                    elif model_words[0].lower() == 'range' and len(model_words) > 1 and model_words[1].lower() == 'rover':
+                                                        make = "Range Rover"
+                                                    else:
+                                                        make = model_words[0]
+                                                        if len(model_words) > 1:
+                                                            if model_words[1].lower() in ['rover', 'motor', 'motors', 'automotive']:
+                                                                make = f"{model_words[0]} {model_words[1]}"
+                                                
+                                                if model:
+                                                    fitment_entry = {
+                                                        'year': year,
+                                                        'make': make,
+                                                        'model': model,
+                                                        'trim': '',
+                                                        'engine': engine
+                                                    }
+                                                    if fitment_entry not in product_data['fitments']:
+                                                        product_data['fitments'].append(fitment_entry)
+                                    except:
+                                        continue
                         
                         if product_data['fitments']:
                             self.logger.info(f"✅ Extracted {len(product_data['fitments'])} fitment combinations from Fitment Details tab")
-                    else:
+                        else:
                             self.logger.warning("No fitments found in Fitment Details tab")
                     except Exception as e:
                         self.logger.warning(f"Error extracting fitments from Fitment Details tab: {str(e)}")
@@ -1897,6 +2131,48 @@ class ScuderiaCarPartsScraper(BaseScraper):
                             try:
                                 product_json = json.loads(script_elem.string)
                                 fitments = product_json.get('fitment', []) or product_json.get('vehicles', [])
+                                
+                                # Helper function to expand year ranges in JSON data
+                                def expand_year_range_json(model_text, year_start, year_end, make, trim, engine):
+                                    """Expand a year range into individual fitment entries (JSON version)."""
+                                    expanded_fitments = []
+                                    
+                                    try:
+                                        start_year = int(year_start)
+                                        end_year = int(year_end)
+                                        
+                                        # Remove year range from model name to get base model
+                                        base_model = re.sub(r'\s*\(\d{4}-\d{4}\)', '', model_text).strip()
+                                        
+                                        # Create one fitment entry for each year in the range
+                                        for year in range(start_year, end_year + 1):
+                                            year_str = str(year)
+                                            # Model format: "Bentayga 2015", "Bentayga 2016", etc.
+                                            model_with_year = f"{base_model} {year_str}"
+                                            
+                                            fitment_entry = {
+                                                'year': year_str,
+                                                'make': make,
+                                                'model': model_with_year,
+                                                'trim': trim,
+                                                'engine': engine
+                                            }
+                                            expanded_fitments.append(fitment_entry)
+                                        
+                                        self.logger.debug(f"Expanded {model_text} ({year_start}-{year_end}) into {len(expanded_fitments)} fitment entries (JSON)")
+                                    except (ValueError, TypeError) as e:
+                                        self.logger.debug(f"Error expanding year range (JSON): {str(e)}")
+                                        # Fallback: return single entry with original model
+                                        expanded_fitments.append({
+                                            'year': year_start,
+                                            'make': make,
+                                            'model': model_text.strip(),
+                                            'trim': trim,
+                                            'engine': engine
+                                        })
+                                    
+                                    return expanded_fitments
+                                
                                 for fitment in fitments:
                                     try:
                                         year = str(fitment.get('year', ''))
@@ -1905,15 +2181,31 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                         trims = fitment.get('trims', []) or ['']
                                         engines = fitment.get('engines', []) or ['']
                                         
-                                        for trim in trims:
-                                            for engine in engines:
-                                                product_data['fitments'].append({
-                                                    'year': year,
-                                                    'make': make,
-                                                    'model': model,
-                                                    'trim': trim,
-                                                    'engine': engine
-                                                })
+                                        # Check if model contains a year range pattern
+                                        year_range_match = re.search(r'\((\d{4})-(\d{4})\)', model)
+                                        
+                                        if year_range_match:
+                                            # Model has year range - expand it
+                                            year_start = year_range_match.group(1)
+                                            year_end = year_range_match.group(2)
+                                            
+                                            for trim in trims:
+                                                for engine in engines:
+                                                    # Expand year range into individual entries
+                                                    expanded_fitments = expand_year_range_json(model, year_start, year_end, make, trim, engine)
+                                                    for fitment_entry in expanded_fitments:
+                                                        product_data['fitments'].append(fitment_entry)
+                                        else:
+                                            # No year range - use as is
+                                            for trim in trims:
+                                                for engine in engines:
+                                                    product_data['fitments'].append({
+                                                        'year': year,
+                                                        'make': make,
+                                                        'model': model,
+                                                        'trim': trim,
+                                                        'engine': engine
+                                                    })
                                     except:
                                         continue
                             except:

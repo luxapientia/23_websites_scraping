@@ -1031,7 +1031,7 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                                     time.sleep(2)
                                     return True
                     except:
-                        continue
+                                    continue
             except:
                 pass
             
@@ -1378,7 +1378,7 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                 return []
 
         if not html: return []
-
+        
         soup = BeautifulSoup(html, 'lxml')
         
         base_data = {
@@ -1394,7 +1394,8 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                 base_data['title'] = title_elem.get_text(strip=True)
             else:
                 title_tag = soup.find('title')
-                if title_tag: base_data['title'] = title_tag.get_text(strip=True).split('|')[0].strip()
+                if title_tag:
+                    base_data['title'] = title_tag.get_text(strip=True).split('|')[0].strip()
 
             if not base_data['title']: return []
 
@@ -1526,8 +1527,8 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                             div = li.find('div')
                             if div:
                                 base_data['description'] = div.get_text(strip=True)
-                                break
-
+                            break
+                
             # Priority 3: Meta description
             if not base_data['description']:
                 meta_desc = soup.find('meta', attrs={'name': 'description'})
@@ -1689,7 +1690,7 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                 final_list.append(row)
 
             return final_list
-
+            
         except Exception as e:
             self.logger.error(f"❌ Error scraping product: {e}")
             return []
