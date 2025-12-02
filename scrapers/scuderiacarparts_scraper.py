@@ -206,13 +206,220 @@ class ScuderiaCarPartsScraper(BaseScraper):
                 except:
                     return True  # Assume overlay is gone if we can't check
             
-            # Handle "Load more results" button - click until all results are loaded
-            self.logger.info("Handling 'Load more results' button (will click until all results are loaded)...")
+            # Helper function to count product containers
+            def count_product_containers():
+                """Count how many product containers are currently on the page"""
+                try:
+                    product_container_selectors = [
+                        "div.searchresultbox",
+                        "div[class*='searchresult']",
+                        "div[class*='product']",
+                        "div[class*='item']",
+                    ]
+                    
+                    for container_selector in product_container_selectors:
+                        try:
+                            containers = self.driver.find_elements(By.CSS_SELECTOR, container_selector)
+                            if containers and len(containers) > 0:
+                                return len(containers)
+                        except:
+                            continue
+                    
+                    # Fallback: Use BeautifulSoup
+                    html = self.driver.page_source
+                    soup = BeautifulSoup(html, 'lxml')
+                    product_containers_bs = soup.find_all('div', class_=re.compile(r'searchresult', re.I))
+                    if not product_containers_bs:
+                        product_containers_bs = soup.find_all(['div', 'article', 'li'], class_=re.compile(r'product|item', re.I))
+                    return len(product_containers_bs)
+                except:
+                    return 0
+            
+            # Helper function to extract product URLs from specific container range
+            def extract_urls_from_containers(start_index=0, end_index=None):
+                """
+                Extract product URLs from containers starting from start_index
+                Only processes NEW containers (from start_index onwards)
+                """
+                current_urls = []
+                try:
+                    # Wait for loading overlay to disappear
+                    wait_for_loading_overlay_to_disappear(timeout=5)
+                    time.sleep(1)  # Brief wait for content to stabilize
+                    
+                    # Find product containers using Selenium first
+                    product_container_selectors = [
+                        "div.searchresultbox",
+                        "div[class*='searchresult']",
+                        "div[class*='product']",
+                        "div[class*='item']",
+                    ]
+                    
+                    containers_found = False
+                    for container_selector in product_container_selectors:
+                        try:
+                            containers = self.driver.find_elements(By.CSS_SELECTOR, container_selector)
+                            if containers and len(containers) > 0:
+                                containers_found = True
+                                
+                                # Only process containers from start_index onwards (NEW containers)
+                                if end_index is None:
+                                    containers_to_process = containers[start_index:]
+                                else:
+                                    containers_to_process = containers[start_index:end_index]
+                                
+                                self.logger.debug(f"Processing {len(containers_to_process)} NEW containers (indices {start_index} to {len(containers) if end_index is None else end_index})")
+                                
+                                for container in containers_to_process:
+                                    try:
+                                        # Extract title
+                                        title = ''
+                                        try:
+                                            name_elem = container.find_element(By.CSS_SELECTOR, "div.mt-md strong")
+                                            if name_elem:
+                                                product_name = name_elem.text.strip()
+                                                
+                                                # Get description
+                                                desc_elems = container.find_elements(By.CSS_SELECTOR, "div.mt-xs.text-sm")
+                                                description = ''
+                                                for desc in desc_elems:
+                                                    desc_text = desc.text.strip()
+                                                    if desc_text and not any(label in desc_text.upper() for label in ['TO ORDER', 'IN STOCK', 'OUT OF STOCK', 'AVAILABLE']):
+                                                        if not desc.find_elements(By.CSS_SELECTOR, "span.label"):
+                                                            description = desc_text
+                                                            break
+                                                
+                                                if description:
+                                                    description = re.sub(r'\s*(To Order|In Stock|Out of Stock|Available).*', '', description, flags=re.IGNORECASE)
+                                                    title = f"{product_name} {description}".strip()
+                                                else:
+                                                    title = product_name
+                                        except:
+                                            pass
+                                        
+                                        # Check if wheel product
+                                        if title and len(title) >= 3 and self.is_wheel_product(title):
+                                            # Extract URL
+                                            href = None
+                                            try:
+                                                link_elem = container.find_element(By.CSS_SELECTOR, "a")
+                                                if link_elem:
+                                                    href = link_elem.get_attribute('href')
+                                            except:
+                                                pass
+                                            
+                                            if not href:
+                                                try:
+                                                    onclick = container.get_attribute('onclick')
+                                                    if onclick:
+                                                        match = re.search(r"window\.location\s*=\s*['\"]([^'\"]+)['\"]", onclick)
+                                                        if match:
+                                                            href = match.group(1)
+                                                except:
+                                                    pass
+                                            
+                                            if not href:
+                                                href = container.get_attribute('data-url') or container.get_attribute('data-href')
+                                            
+                                            if href and href != 'javascript:void(0)' and href != '#':
+                                                if href.startswith('javascript:'):
+                                                    continue
+                                                
+                                                full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                                                if '#' in full_url:
+                                                    full_url = full_url.split('#')[0]
+                                                if '?' in full_url:
+                                                    full_url = full_url.split('?')[0]
+                                                full_url = full_url.rstrip('/')
+                                                
+                                                skip_patterns = ['/search/', '/category/', '/cart/', '/checkout/', '/account/', '/login/']
+                                                if not any(exclude in full_url.lower() for exclude in skip_patterns):
+                                                    if full_url not in current_urls:
+                                                        current_urls.append(full_url)
+                                    except:
+                                        continue
+                                
+                                if current_urls:
+                                    break
+                        except:
+                            continue
+                    
+                    # Fallback: Use BeautifulSoup if Selenium didn't find containers
+                    if not containers_found or len(current_urls) == 0:
+                        html = self.driver.page_source
+                        soup = BeautifulSoup(html, 'lxml')
+                        product_containers_bs = soup.find_all('div', class_=re.compile(r'searchresult', re.I))
+                        if not product_containers_bs:
+                            product_containers_bs = soup.find_all(['div', 'article', 'li'], class_=re.compile(r'product|item', re.I))
+                        
+                        # Only process containers from start_index onwards
+                        if end_index is None:
+                            containers_to_process = product_containers_bs[start_index:]
+                        else:
+                            containers_to_process = product_containers_bs[start_index:end_index]
+                        
+                        for container in containers_to_process:
+                            try:
+                                title = ''
+                                name_div = container.find('div', class_='mt-md')
+                                if name_div:
+                                    name_strong = name_div.find('strong')
+                                    if name_strong:
+                                        product_name = name_strong.get_text(strip=True)
+                                        desc_divs = container.find_all('div', class_=re.compile(r'mt-xs.*text-sm', re.I))
+                                        description = ''
+                                        for desc_div in desc_divs:
+                                            desc_text = desc_div.get_text(strip=True)
+                                            if desc_text and not any(label in desc_text.upper() for label in ['TO ORDER', 'IN STOCK']):
+                                                if not desc_div.find('span', class_='label'):
+                                                    description = desc_text
+                                                    break
+                                        
+                                        if description:
+                                            title = f"{product_name} {description}".strip()
+                                        else:
+                                            title = product_name
+                                
+                                if title and len(title) >= 3 and self.is_wheel_product(title):
+                                    link = container.find('a', href=True)
+                                    if link:
+                                        href = link.get('href', '')
+                                        if href and href != 'javascript:void(0)' and href != '#':
+                                            full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                                            if '#' in full_url:
+                                                full_url = full_url.split('#')[0]
+                                            if '?' in full_url:
+                                                full_url = full_url.split('?')[0]
+                                            full_url = full_url.rstrip('/')
+                                            
+                                            if full_url not in current_urls:
+                                                current_urls.append(full_url)
+                            except:
+                                continue
+                
+                except Exception as e:
+                    self.logger.debug(f"Error extracting URLs from containers: {str(e)[:50]}")
+                
+                return current_urls
+            
+            # NEW APPROACH: Collect URLs incrementally - only NEW products after each click
+            # Step 1: Collect product URLs from initial page (all containers from index 0)
+            self.logger.info("Step 1: Collecting product URLs from initial page...")
+            initial_urls = extract_urls_from_containers(start_index=0)
+            product_urls.extend(initial_urls)
+            previous_container_count = count_product_containers()
+            self.logger.info(f"✓ Collected {len(initial_urls)} product URLs from initial page (Total: {len(product_urls)}, Containers: {previous_container_count})")
+            
+            # Step 2: Click "Load more results" button and collect new URLs repeatedly
+            self.logger.info("Step 2: Clicking 'Load more results' button and collecting new URLs incrementally...")
             load_more_clicked = 0
             consecutive_no_button = 0
             max_consecutive_no_button = 3  # Stop after 3 consecutive attempts with no button
+            max_iterations = 100  # Safety limit to prevent infinite loops
             
-            while True:  # Continue until button is no longer available
+            iteration = 0
+            while iteration < max_iterations:
+                iteration += 1
                 try:
                     # CRITICAL: Wait for loading overlay to disappear before trying to click
                     wait_for_loading_overlay_to_disappear(timeout=5)
@@ -285,7 +492,7 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                 time.sleep(1)  # Brief wait for overlay to appear
                                 wait_for_loading_overlay_to_disappear(timeout=10)  # Wait for content to load
                                 
-                                # Wait for new product containers to appear in DOM (NOT URL-based selectors)
+                                # Wait for new product containers to appear in DOM
                                 try:
                                     WebDriverWait(self.driver, 5).until(
                                         lambda d: len(d.find_elements(By.CSS_SELECTOR, "div[class*='product'], div[class*='item'], [data-product-id], .product-card, .product-item")) > 0
@@ -296,11 +503,36 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                 # Additional wait for new products to fully render
                                 time.sleep(2)
                                 
-                                # Optional: Scroll down a bit to trigger lazy loading if any
+                                # Scroll down a bit to trigger lazy loading if any
                                 self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
                                 time.sleep(1)
                                 
-                                # Continue to next iteration to check for more results
+                                # NOW: Collect ONLY NEW product URLs from newly loaded containers
+                                # Only extract from containers starting from previous_container_count (skip old containers)
+                                current_container_count = count_product_containers()
+                                self.logger.info(f"Collecting NEW product URLs after click #{load_more_clicked} (containers {previous_container_count} to {current_container_count})...")
+                                
+                                # Only process NEW containers (from previous_container_count onwards)
+                                new_urls = extract_urls_from_containers(start_index=previous_container_count)
+                                
+                                # Add only the new URLs
+                                new_urls_count = len(new_urls)
+                                product_urls.extend(new_urls)
+                                
+                                # Update container count for next iteration
+                                previous_container_count = current_container_count
+                                
+                                self.logger.info(f"✓ Found {new_urls_count} NEW product URLs after click #{load_more_clicked} (Total: {len(product_urls)}, Containers: {current_container_count})")
+                                
+                                # If no new URLs were found, we might have reached the end
+                                if new_urls_count == 0:
+                                    self.logger.info("No new URLs found after clicking - may have reached end of results")
+                                    consecutive_no_button += 1
+                                    if consecutive_no_button >= 2:  # Give it one more try
+                                        self.logger.info("No new URLs for 2 consecutive clicks - stopping")
+                                        break
+                                else:
+                                    consecutive_no_button = 0  # Reset counter if we found new URLs
                                 
                             except Exception as click_error:
                                 error_str = str(click_error).lower()
@@ -316,16 +548,23 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                         self.logger.info(f"✓ Clicked 'Load more results' button after waiting for overlay (click #{load_more_clicked})")
                                         time.sleep(1)
                                         wait_for_loading_overlay_to_disappear(timeout=10)
-                                        # Wait for new product containers (NOT URL-based selectors)
-                                        try:
-                                            WebDriverWait(self.driver, 5).until(
-                                                lambda d: len(d.find_elements(By.CSS_SELECTOR, "div[class*='product'], div[class*='item'], [data-product-id], .product-card, .product-item")) > 0
-                                            )
-                                        except:
-                                            pass
                                         time.sleep(2)
                                         
-                                        # Continue to next iteration to check for more results
+                                        # Collect ONLY NEW URLs from newly loaded containers
+                                        current_container_count = count_product_containers()
+                                        new_urls = extract_urls_from_containers(start_index=previous_container_count)
+                                        new_urls_count = len(new_urls)
+                                        product_urls.extend(new_urls)
+                                        previous_container_count = current_container_count
+                                        
+                                        self.logger.info(f"✓ Found {new_urls_count} NEW product URLs after click #{load_more_clicked} (Total: {len(product_urls)}, Containers: {current_container_count})")
+                                        
+                                        if new_urls_count == 0:
+                                            consecutive_no_button += 1
+                                            if consecutive_no_button >= 2:
+                                                break
+                                        else:
+                                            consecutive_no_button = 0
                                     except:
                                         # If still fails, try JavaScript click
                                         try:
@@ -335,16 +574,23 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                             self.logger.info(f"✓ Clicked 'Load more results' button via JavaScript (click #{load_more_clicked})")
                                             time.sleep(1)
                                             wait_for_loading_overlay_to_disappear(timeout=10)
-                                            # Wait for new product containers (NOT URL-based selectors)
-                                            try:
-                                                WebDriverWait(self.driver, 5).until(
-                                                    lambda d: len(d.find_elements(By.CSS_SELECTOR, "div[class*='product'], div[class*='item'], [data-product-id], .product-card, .product-item")) > 0
-                                                )
-                                            except:
-                                                pass
                                             time.sleep(2)
                                             
-                                            # Continue to next iteration to check for more results
+                                            # Collect ONLY NEW URLs from newly loaded containers
+                                            current_container_count = count_product_containers()
+                                            new_urls = extract_urls_from_containers(start_index=previous_container_count)
+                                            new_urls_count = len(new_urls)
+                                            product_urls.extend(new_urls)
+                                            previous_container_count = current_container_count
+                                            
+                                            self.logger.info(f"✓ Found {new_urls_count} NEW product URLs after click #{load_more_clicked} (Total: {len(product_urls)}, Containers: {current_container_count})")
+                                            
+                                            if new_urls_count == 0:
+                                                consecutive_no_button += 1
+                                                if consecutive_no_button >= 2:
+                                                    break
+                                            else:
+                                                consecutive_no_button = 0
                                         except Exception as js_click_error:
                                             self.logger.warning(f"JavaScript click also failed: {str(js_click_error)}")
                                             consecutive_no_button += 1
@@ -363,13 +609,27 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                         wait_for_loading_overlay_to_disappear(timeout=10)
                                         time.sleep(2)
                                         
-                                        # Continue to next iteration to check for more results
+                                        # Collect ONLY NEW URLs from newly loaded containers
+                                        current_container_count = count_product_containers()
+                                        new_urls = extract_urls_from_containers(start_index=previous_container_count)
+                                        new_urls_count = len(new_urls)
+                                        product_urls.extend(new_urls)
+                                        previous_container_count = current_container_count
+                                        
+                                        self.logger.info(f"✓ Found {new_urls_count} NEW product URLs after click #{load_more_clicked} (Total: {len(product_urls)}, Containers: {current_container_count})")
+                                        
+                                        if new_urls_count == 0:
+                                            consecutive_no_button += 1
+                                            if consecutive_no_button >= 2:
+                                                break
+                                        else:
+                                            consecutive_no_button = 0
                                     except Exception as js_click_error:
                                         self.logger.warning(f"JavaScript click also failed: {str(js_click_error)}")
                                         consecutive_no_button += 1
-                                        if consecutive_no_button >= max_consecutive_no_button:
-                                            self.logger.info("No more 'Load more results' button found or button not clickable")
-                                        break
+                                    if consecutive_no_button >= max_consecutive_no_button:
+                                        self.logger.info("No more 'Load more results' button found or button not clickable")
+                                    break
                         else:
                             # Button exists but not visible/enabled - likely all products loaded
                             self.logger.info("'Load more results' button found but not visible/enabled - all products likely loaded")
@@ -393,457 +653,37 @@ class ScuderiaCarPartsScraper(BaseScraper):
                             break
                     time.sleep(1)
                     
-            self.logger.info(f"Finished clicking 'Load more results' button ({load_more_clicked} total clicks) - proceeding to extract product URLs...")
-                    
-            # Final scroll to ensure all lazy-loaded content is visible
-            self.logger.info("Performing final scroll to load any lazy-loaded content...")
-            try:
-                last_height = self.driver.execute_script("return document.body.scrollHeight")
-                scroll_attempts = 0
-                max_scrolls = 20
-                no_change_count = 0
-                
-                while scroll_attempts < max_scrolls:
-                    self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                    time.sleep(1.5)
-                    
-                    new_height = self.driver.execute_script("return document.body.scrollHeight")
-                    if new_height == last_height:
-                        no_change_count += 1
-                        if no_change_count >= 3:
-                            break
-                    else:
-                        no_change_count = 0
-                    last_height = new_height
-                    scroll_attempts += 1
-            except Exception as scroll_error:
-                self.logger.warning(f"Error during final scroll: {str(scroll_error)}")
+            self.logger.info(f"Finished clicking 'Load more results' button ({load_more_clicked} clicks total)")
+            self.logger.info(f"Final total: {len(product_urls)} unique product URLs collected")
             
-            # Extract ALL product URLs from the fully loaded page (not filtered by pattern)
-            self.logger.info("Extracting ALL product URLs from fully loaded page...")
+            # Final collection pass to ensure we didn't miss anything (only NEW containers)
+            self.logger.info("Performing final collection pass to ensure all URLs are captured...")
+            current_container_count = count_product_containers()
+            final_urls = extract_urls_from_containers(start_index=previous_container_count)
+            final_new_count = len(final_urls)
+            product_urls.extend(final_urls)
             
-            # Wait for loading overlay to disappear before extracting
-            wait_for_loading_overlay_to_disappear(timeout=5)
-            time.sleep(2)  # Additional wait for content to stabilize
+            if final_new_count > 0:
+                self.logger.info(f"✓ Found {final_new_count} additional NEW URLs in final pass (Total: {len(product_urls)}, Containers: {current_container_count})")
             
-            try:
-                html = self.driver.page_source
-            except Exception as page_source_error:
-                self.logger.error(f"Error accessing page_source: {str(page_source_error)}")
-                return product_urls
-            
-            soup = BeautifulSoup(html, 'lxml')
-            
-            # NEW APPROACH: Find product items by their titles first, then extract URLs only for wheel products
-            # Step 1: Find all product containers/items on the search results page
-            self.logger.info("Step 1: Finding product items on search results page...")
-            self.logger.info("Extracting titles from product items and filtering by WHEEL_KEYWORDS and EXCLUDE_KEYWORDS...")
-            
-            product_containers_found = False
-            
-            try:
-                # Try multiple selectors to find product containers/cards on the search results page
-                # Based on HTML structure: div.searchresultbox contains the product info
-                product_container_selectors = [
-                    "div.searchresultbox",  # Primary selector based on actual HTML structure
-                    "div[class*='searchresult']",
-                    "div[class*='product']",
-                    "div[class*='item']",
-                    "div[class*='catalog']",
-                    "[data-product-id]",
-                    "[data-item-id]",
-                    ".product-card",
-                    ".product-item",
-                    ".catalog-item",
-                    "article[class*='product']",
-                    "li[class*='product']",
-                ]
-                
-                for container_selector in product_container_selectors:
-                    try:
-                        containers = self.driver.find_elements(By.CSS_SELECTOR, container_selector)
-                        if containers and len(containers) > 0:
-                            self.logger.info(f"Found {len(containers)} product containers using selector: {container_selector}")
-                            product_containers_found = True
-                            
-                            processed_count = 0
-                            wheel_count = 0
-                            skipped_count = 0
-                            
-                            for container in containers:
-                                try:
-                                    # Step 1: Extract title from the container FIRST
-                                    # Based on HTML structure:
-                                    # - Product name/model: div.mt-md > strong (e.g., "Maserati 920018041")
-                                    # - Description: div.mt-xs.text-sm (e.g., "ALLOY WHEEL RIM ERACLE")
-                                    # Combine both to form the full title
-                                    title = ''
-                                    
-                                    # First, try the specific structure for scuderiacarparts.com
-                                    try:
-                                        # Get product name/model from div.mt-md > strong
-                                        # HTML structure: <div class="mt-md"><strong>Maserati 920018041</strong></div>
-                                        name_elem = None
-                                        try:
-                                            name_elem = container.find_element(By.CSS_SELECTOR, "div.mt-md strong")
-                                        except:
-                                            # Try alternative: div.mt-md > strong might not exist, try just strong within mt-md
-                                            try:
-                                                mt_md_div = container.find_element(By.CSS_SELECTOR, "div.mt-md")
-                                                name_elem = mt_md_div.find_element(By.TAG_NAME, "strong")
-                                            except:
-                                                pass
-                                        
-                                        if name_elem:
-                                            product_name = name_elem.text.strip()
-                                            
-                                            # Get description from div.mt-xs.text-sm
-                                            # HTML structure: <div class="mt-xs text-sm">ALLOY WHEEL RIM ERACLE</div>
-                                            desc_elem = None
-                                            description = ''
-                                            
-                                            # Try multiple approaches to find the description element
-                                            try:
-                                                # Approach 1: Direct selector for div.mt-xs.text-sm (both classes)
-                                                desc_elems = container.find_elements(By.CSS_SELECTOR, "div.mt-xs.text-sm")
-                                                for desc in desc_elems:
-                                                    desc_text = desc.text.strip()
-                                                    # Skip if it's a label (contains "To Order", "In Stock", etc.)
-                                                    if desc_text and not any(label in desc_text.upper() for label in ['TO ORDER', 'IN STOCK', 'OUT OF STOCK', 'AVAILABLE']):
-                                                        # Check if it doesn't contain a label element
-                                                        if not desc.find_elements(By.CSS_SELECTOR, "span.label"):
-                                                            desc_elem = desc
-                                                            description = desc_text
-                                                            break
-                                            except:
-                                                pass
-                                            
-                                            # Approach 2: If not found, try finding all div.mt-xs and check which has text-sm class
-                                            if not desc_elem:
-                                                try:
-                                                    desc_elems = container.find_elements(By.CSS_SELECTOR, "div.mt-xs")
-                                                    for desc in desc_elems:
-                                                        # Check if this element has the text-sm class
-                                                        classes = desc.get_attribute('class') or ''
-                                                        if 'text-sm' in classes:
-                                                            desc_text = desc.text.strip()
-                                                            # Skip if it's a label
-                                                            if desc_text and not any(label in desc_text.upper() for label in ['TO ORDER', 'IN STOCK', 'OUT OF STOCK', 'AVAILABLE']):
-                                                                # Check if it doesn't contain a label element
-                                                                if not desc.find_elements(By.CSS_SELECTOR, "span.label"):
-                                                                    desc_elem = desc
-                                                                    description = desc_text
-                                                                    break
-                                                except:
-                                                    pass
-                                            
-                                            # Approach 3: If still not found, try finding div.mt-xs that comes after div.mt-md
-                                            if not desc_elem:
-                                                try:
-                                                    # Find all div.mt-xs elements and pick the first one that's not a label
-                                                    desc_elems = container.find_elements(By.CSS_SELECTOR, "div.mt-xs")
-                                                    for desc in desc_elems:
-                                                        desc_text = desc.text.strip()
-                                                        # Skip if it's a label or contains label text
-                                                        if desc_text and not any(label in desc_text.upper() for label in ['TO ORDER', 'IN STOCK', 'OUT OF STOCK', 'AVAILABLE']):
-                                                            # Check if it doesn't contain a label element
-                                                            if not desc.find_elements(By.CSS_SELECTOR, "span.label"):
-                                                                # Additional check: if it contains wheel-related keywords, it's likely the description
-                                                                desc_upper = desc_text.upper()
-                                                                if any(keyword in desc_upper for keyword in ['WHEEL', 'RIM', 'ALLOY', 'STEEL', 'CAP']):
-                                                                    desc_elem = desc
-                                                                    description = desc_text
-                                                                    break
-                                                except:
-                                                    pass
-                                            
-                                            # Combine product name and description
-                                            if description:
-                                                # Remove any label text that might have been included
-                                                description = re.sub(r'\s*(To Order|In Stock|Out of Stock|Available).*', '', description, flags=re.IGNORECASE)
-                                                title = f"{product_name} {description}".strip()
-                                            else:
-                                                title = product_name
-                                            
-                                            if title and len(title) >= 3:
-                                                self.logger.debug(f"Extracted title from mt-md/mt-xs structure: '{title[:60]}'")
-                                    except:
-                                        # Fallback: Try generic selectors
-                                        title_selectors = [
-                                            "h1, h2, h3, h4",
-                                            ".product-title",
-                                            ".product-name",
-                                            "[class*='title']",
-                                            "[class*='name']",
-                                            "a[title]",  # Title attribute
-                                        ]
-                                        
-                                        for title_selector in title_selectors:
-                                            try:
-                                                title_elem = container.find_element(By.CSS_SELECTOR, title_selector)
-                                                if title_elem:
-                                                    # Try text content first
-                                                    title = title_elem.text.strip()
-                                                    if not title:
-                                                        # Try title attribute
-                                                        title = title_elem.get_attribute('title') or title_elem.get_attribute('data-title') or ''
-                                                    if title and len(title) >= 3:
-                                                        break
-                                            except:
-                                                continue
-                                        
-                                        # If no title found in container, try to find link and get its text
-                                        if not title:
-                                            try:
-                                                link_elem = container.find_element(By.CSS_SELECTOR, "a")
-                                                if link_elem:
-                                                    title = link_elem.text.strip()
-                                                    if not title:
-                                                        title = link_elem.get_attribute('title') or link_elem.get_attribute('data-title') or ''
-                                            except:
-                                                pass
-                                    
-                                    # Step 2: Check if title matches wheel keywords (WHEEL_KEYWORDS and EXCLUDE_KEYWORDS)
-                                    if title and len(title) >= 3:
-                                        # Use the is_wheel_product method from base_scraper
-                                        is_wheel = self.is_wheel_product(title)
-                                        
-                                        if is_wheel:
-                                            # Step 3: Only if it's a wheel product, extract the URL
-                                            try:
-                                                href = None
-                                                
-                                                # First, try to find a link element
-                                                try:
-                                                    link_elem = container.find_element(By.CSS_SELECTOR, "a")
-                                                    if link_elem:
-                                                        href = link_elem.get_attribute('href')
-                                                        if not href:
-                                                            href = link_elem.get_attribute('data-url')
-                                                        if not href:
-                                                            href = link_elem.get_attribute('data-href')
-                                                except:
-                                                    pass
-                                                
-                                                # If no href found, try to extract from onclick attribute
-                                                # HTML structure: onclick="window.location='/part/...';"
-                                                if not href:
-                                                    try:
-                                                        onclick = container.get_attribute('onclick')
-                                                        if onclick:
-                                                            # Extract URL from onclick: window.location='/part/...';
-                                                            match = re.search(r"window\.location\s*=\s*['\"]([^'\"]+)['\"]", onclick)
-                                                            if match:
-                                                                href = match.group(1)
-                                                    except:
-                                                        pass
-                                                
-                                                # If still no href, try data attributes
-                                                if not href:
-                                                    href = container.get_attribute('data-url') or container.get_attribute('data-href')
-                                                
-                                                if href and href != 'javascript:void(0)' and href != '#':
-                                                    # Normalize URL
-                                                    if href.startswith('javascript:'):
-                                                        continue
-                                                    
-                                                    full_url = href if href.startswith('http') else f"{self.base_url}{href}"
-                                                    
-                                                    # Remove fragment (#)
-                                                    if '#' in full_url:
-                                                        full_url = full_url.split('#')[0]
-                                                    
-                                                    # Remove query params
-                                                    if '?' in full_url:
-                                                        full_url = full_url.split('?')[0]
-                                                    
-                                                    # Normalize trailing slashes
-                                                    full_url = full_url.rstrip('/')
-                                        
-                                                    # Exclude non-product URLs
-                                                    skip_patterns = ['/search/', '/category/', '/cart/', '/checkout/', '/account/', '/login/', '/register/', '/contact/', '/about/', '/help/']
-                                                    if any(exclude in full_url.lower() for exclude in skip_patterns):
-                                                        continue
-                                                    
-                                                    # Add to product URLs if not already present
-                                                    if full_url not in product_urls:
-                                                        product_urls.append(full_url)
-                                                        wheel_count += 1
-                                                        processed_count += 1
-                                                        safe_title = self.safe_str(title[:60])
-                                                        self.logger.info(f"✓ [{processed_count}] WHEEL: '{safe_title}' -> {full_url[:80]}")
-                                            except Exception as url_error:
-                                                self.logger.debug(f"Error extracting URL from wheel product container: {str(url_error)[:50]}")
-                                        else:
-                                            # Not a wheel product - filtered out by WHEEL_KEYWORDS/EXCLUDE_KEYWORDS
-                                            skipped_count += 1
-                                            safe_title = self.safe_str(title[:60])
-                                            self.logger.debug(f"  SKIPPED (not wheel): '{safe_title}'")
-                                    else:
-                                        # No title found - skip this container
-                                        self.logger.debug(f"  SKIPPED (no title found in container)")
-                                
-                                except Exception as container_error:
-                                    self.logger.debug(f"Error processing container: {str(container_error)[:50]}")
-                                    continue
-                    
-                            self.logger.info(f"✓ Processed {len(containers)} product containers")
-                            self.logger.info(f"  - Wheel products found: {wheel_count}")
-                            self.logger.info(f"  - Skipped (not wheel): {skipped_count}")
-                            
-                            if wheel_count > 0:
-                                # Found wheel products, no need to try other selectors
-                                break
-                    except Exception as e:
-                        self.logger.debug(f"Error with container selector {container_selector}: {str(e)[:50]}")
-                        continue
-                
-                # Fallback: Try BeautifulSoup if Selenium didn't find containers
-                if not product_containers_found or len(product_urls) == 0:
-                    self.logger.info("Trying BeautifulSoup to find product items by title...")
-                    
-                    # Find all potential product containers in the HTML
-                    # First try searchresultbox (specific to scuderiacarparts.com)
-                    product_containers_bs = soup.find_all('div', class_=re.compile(r'searchresult', re.I))
-                    
-                    if not product_containers_bs:
-                        product_containers_bs = soup.find_all(['div', 'article', 'li'], class_=re.compile(r'product|item|catalog', re.I))
-                    
-                    if not product_containers_bs:
-                        # Try finding by data attributes
-                        product_containers_bs = soup.find_all(attrs={'data-product-id': True}) + soup.find_all(attrs={'data-item-id': True})
-                    
-                    if product_containers_bs:
-                        self.logger.info(f"Found {len(product_containers_bs)} product containers using BeautifulSoup")
-                        
-                        for container in product_containers_bs:
-                            try:
-                                # Extract title from container
-                                # Based on HTML structure: div.mt-md > strong and div.mt-xs.text-sm
-                                title = ''
-                                
-                                # First, try the specific structure for scuderiacarparts.com
-                                try:
-                                    # Get product name/model from div.mt-md > strong
-                                    name_div = container.find('div', class_='mt-md')
-                                    if name_div:
-                                        name_strong = name_div.find('strong')
-                                        if name_strong:
-                                            product_name = name_strong.get_text(strip=True)
-                                            
-                                            # Get description from div.mt-xs.text-sm (but exclude labels)
-                                            desc_divs = container.find_all('div', class_=re.compile(r'mt-xs.*text-sm', re.I))
-                                            description = ''
-                                            for desc_div in desc_divs:
-                                                desc_text = desc_div.get_text(strip=True)
-                                                # Skip if it's a label (contains "To Order", "In Stock", etc.)
-                                                if desc_text and not any(label in desc_text.upper() for label in ['TO ORDER', 'IN STOCK', 'OUT OF STOCK', 'AVAILABLE']):
-                                                    # Check if it doesn't contain a label element
-                                                    if not desc_div.find('span', class_='label'):
-                                                        description = desc_text
-                                                        # Remove any label text that might have been included
-                                                        description = re.sub(r'\s*(To Order|In Stock|Out of Stock|Available).*', '', description, flags=re.IGNORECASE)
-                                                        break
-                                            
-                                            # Combine product name and description
-                                            if description:
-                                                title = f"{product_name} {description}".strip()
-                                            else:
-                                                title = product_name
-                                except:
-                                    pass
-                                
-                                # Fallback: Try generic title selectors
-                                if not title:
-                                    # Try finding title elements
-                                    title_elem = (container.find('h1') or 
-                                                container.find('h2') or 
-                                                container.find('h3') or
-                                                container.find('h4') or
-                                                container.find(class_=re.compile(r'title|name', re.I)))
-                                    
-                                    if title_elem:
-                                        title = title_elem.get_text(strip=True)
-                                    
-                                    # Try link text if no title found
-                                    if not title:
-                                        link = container.find('a')
-                                        if link:
-                                            title = link.get_text(strip=True)
-                                            if not title:
-                                                title = link.get('title', '')
-                                
-                                # Check if title matches wheel keywords
-                                if title and len(title) >= 3:
-                                    is_wheel = self.is_wheel_product(title)
-                                    
-                                    if is_wheel:
-                                        # Extract URL - try multiple sources
-                                        href = None
-                                        
-                                        # First try link href
-                                        link = container.find('a', href=True)
-                                        if link:
-                                            href = link.get('href', '')
-                                        
-                                        # If no href, try onclick attribute
-                                        if not href:
-                                            onclick = container.get('onclick', '')
-                                            if onclick:
-                                                # Extract URL from onclick: window.location='/part/...';
-                                                match = re.search(r"window\.location\s*=\s*['\"]([^'\"]+)['\"]", onclick)
-                                                if match:
-                                                    href = match.group(1)
-                                        
-                                        # If still no href, try data attributes
-                                        if not href:
-                                            href = container.get('data-url') or container.get('data-href')
-                                        
-                                        if href and href != 'javascript:void(0)' and href != '#':
-                                            if href.startswith('javascript:'):
-                                                continue
-                                            
-                                            full_url = href if href.startswith('http') else f"{self.base_url}{href}"
-                                            if '#' in full_url:
-                                                full_url = full_url.split('#')[0]
-                                            if '?' in full_url:
-                                                full_url = full_url.split('?')[0]
-                                            full_url = full_url.rstrip('/')
-                                            
-                                            # Exclude non-product URLs
-                                            skip_patterns = ['/search/', '/category/', '/cart/', '/checkout/']
-                                            if not any(exclude in full_url.lower() for exclude in skip_patterns):
-                                                if full_url not in product_urls:
-                                                    product_urls.append(full_url)
-                                                    safe_title = self.safe_str(title[:60])
-                                                    self.logger.info(f"✓ WHEEL (BS): '{safe_title}' -> {full_url[:80]}")
-                            except Exception as bs_error:
-                                self.logger.debug(f"Error processing BeautifulSoup container: {str(bs_error)[:50]}")
-                                continue
-                
-            except Exception as e:
-                self.logger.warning(f"Error finding product items by title: {str(e)}")
+            # All URLs have been collected incrementally, no need for the old extraction code
+            # The product_urls list already contains all collected URLs
             
             if product_urls and len(product_urls) > 0:
-                self.logger.info(f"✓ Found {len(product_urls)} wheel product URLs by filtering titles on search results page")
+                self.logger.info(f"✓ Found {len(product_urls)} wheel product URLs by incremental collection")
                 self.logger.info(f"Sample wheel product URLs: {product_urls[:5]}")
             else:
-                self.logger.warning("⚠️ No wheel product URLs found! No product items matched WHEEL_KEYWORDS and EXCLUDE_KEYWORDS.")
-                self.logger.warning("This could mean:")
-                self.logger.warning("  1. No product containers were found on the page")
-                self.logger.warning("  2. No product titles matched WHEEL_KEYWORDS and EXCLUDE_KEYWORDS")
-                self.logger.warning("  3. An error occurred before URLs could be extracted")
+                self.logger.warning("⚠️ No wheel product URLs found!")
             
         except Exception as e:
             self.logger.error(f"Error searching for wheels: {str(e)}")
             import traceback
             self.logger.debug(f"Traceback: {traceback.format_exc()}")
-            # Don't return empty list here - return whatever URLs were found before the error
-            # product_urls should still contain any URLs found before the exception
         
         # Always return product_urls (even if empty) so calling code can proceed
         self.logger.info(f"Returning {len(product_urls)} product URLs from _search_for_wheels()")
         return product_urls
+    
     def scrape_product(self, url):
         """
         Scrape single product from ScuderiaCarParts with retry logic
@@ -1958,17 +1798,17 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                             
                                             # Only add if we have at least model
                                             if model:
-                                                    fitment_entry = {
-                                                        'year': year,
-                                                        'make': make,
-                                                        'model': model,
+                                                fitment_entry = {
+                                                    'year': year,
+                                                    'make': make,
+                                                    'model': model,
                                                     'trim': '',
-                                                        'engine': engine
-                                                    }
-                                                    # Check if this fitment is already added
-                                                    if fitment_entry not in product_data['fitments']:
-                                                        product_data['fitments'].append(fitment_entry)
-                                                    self.logger.debug(f"Extracted fitment: {model} ({year}) [{engine}]")
+                                                    'engine': engine
+                                                }
+                                                # Check if this fitment is already added
+                                                if fitment_entry not in product_data['fitments']:
+                                                    product_data['fitments'].append(fitment_entry)
+                                                self.logger.debug(f"Extracted fitment: {model} ({year}) [{engine}]")
                                         except Exception as e:
                                             self.logger.debug(f"Error parsing fitment row: {str(e)}")
                                             continue
