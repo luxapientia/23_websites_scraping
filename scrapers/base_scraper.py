@@ -156,6 +156,85 @@ class BaseScraper(ABC):
         if use_selenium:
             self.setup_selenium()
     
+    def _detect_chrome_version(self):
+        """
+        Detect the installed Chrome browser version
+        Returns the major version number (e.g., 142) or None if detection fails
+        """
+        try:
+            import subprocess
+            import platform
+            
+            if platform.system() == 'Windows':
+                # Windows: Check registry or chrome.exe version
+                chrome_paths = [
+                    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                    os.path.expanduser(r"~\AppData\Local\Google\Chrome\Application\chrome.exe"),
+                ]
+                
+                for chrome_path in chrome_paths:
+                    if os.path.exists(chrome_path):
+                        try:
+                            # Get version using PowerShell
+                            result = subprocess.run(
+                                ['powershell', '-Command', 
+                                 f'(Get-Item "{chrome_path}").VersionInfo.FileVersion'],
+                                capture_output=True,
+                                text=True,
+                                timeout=5
+                            )
+                            if result.returncode == 0:
+                                version_str = result.stdout.strip()
+                                # Extract major version (e.g., "142.0.7444.176" -> 142)
+                                version_match = re.search(r'^(\d+)\.', version_str)
+                                if version_match:
+                                    version = int(version_match.group(1))
+                                    self.logger.info(f"Detected Chrome version: {version} (from {version_str})")
+                                    return version
+                        except Exception as e:
+                            self.logger.debug(f"Error detecting Chrome version from {chrome_path}: {str(e)}")
+                            continue
+                
+                # Fallback: Try to get version from Chrome's version file
+                try:
+                    version_file = os.path.expanduser(r"~\AppData\Local\Google\Chrome\User Data\Last Version")
+                    if os.path.exists(version_file):
+                        with open(version_file, 'r') as f:
+                            version_str = f.read().strip()
+                            version_match = re.search(r'^(\d+)\.', version_str)
+                            if version_match:
+                                version = int(version_match.group(1))
+                                self.logger.info(f"Detected Chrome version: {version} (from version file)")
+                                return version
+                except Exception as e:
+                    self.logger.debug(f"Error reading Chrome version file: {str(e)}")
+            
+            # Fallback: Try to run Chrome with --version flag
+            try:
+                chrome_cmd = 'chrome' if platform.system() != 'Windows' else 'chrome.exe'
+                result = subprocess.run(
+                    [chrome_cmd, '--version'],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if result.returncode == 0:
+                    version_str = result.stdout.strip()
+                    version_match = re.search(r'(\d+)\.', version_str)
+                    if version_match:
+                        version = int(version_match.group(1))
+                        self.logger.info(f"Detected Chrome version: {version} (from --version)")
+                        return version
+            except Exception as e:
+                self.logger.debug(f"Error running Chrome --version: {str(e)}")
+            
+        except Exception as e:
+            self.logger.debug(f"Error detecting Chrome version: {str(e)}")
+        
+        self.logger.warning("Could not detect Chrome version, will use auto-detection")
+        return None
+    
     def setup_selenium(self):
         """
         Setup undetected ChromeDriver with maximum anti-detection measures - improved initialization
@@ -169,6 +248,9 @@ class BaseScraper(ABC):
             return
         
         try:
+            # Detect Chrome version to ensure ChromeDriver compatibility
+            chrome_version = self._detect_chrome_version()
+            
             # IMPORTANT: Using undetected_chromedriver (uc) instead of regular selenium.webdriver.Chrome
             # This provides automatic anti-detection features and helps bypass Cloudflare
             options = uc.ChromeOptions()  # uc = undetected_chromedriver
@@ -227,9 +309,10 @@ class BaseScraper(ABC):
                         # Use local ChromeDriver to avoid network timeout
                         self.logger.info(f"Using local ChromeDriver with undetected_chromedriver: {driver_executable_path}")
                         # uc.Chrome() automatically bypasses Cloudflare - let it handle challenges naturally
+                        # Use detected Chrome version to ensure compatibility
                         self.driver = uc.Chrome(
                             options=options, 
-                            version_main=None,  # Auto-detect Chrome version
+                            version_main=chrome_version,  # Use detected Chrome version for compatibility
                             use_subprocess=True,  # Run in subprocess to avoid detection
                             driver_executable_path=driver_executable_path,  # Use local ChromeDriver
                             browser_executable_path=None  # Use system Chrome
@@ -238,9 +321,10 @@ class BaseScraper(ABC):
                         # No local ChromeDriver, try auto-download
                         self.logger.info("No local ChromeDriver found, attempting auto-download with undetected_chromedriver...")
                         # uc.Chrome() automatically bypasses Cloudflare - let it handle challenges naturally
+                        # Use detected Chrome version to ensure compatibility
                         self.driver = uc.Chrome(
                             options=options, 
-                            version_main=None,  # Auto-detect Chrome version
+                            version_main=chrome_version,  # Use detected Chrome version for compatibility
                             use_subprocess=True,  # Run in subprocess to avoid detection
                             driver_executable_path=None,  # Let it auto-detect and download
                             browser_executable_path=None  # Use system Chrome
@@ -297,8 +381,40 @@ class BaseScraper(ABC):
                     
                 except (urllib.error.URLError, TimeoutError, OSError, Exception) as e:
                     error_msg = str(e).lower()
+                    
+                    # Check if it's a version mismatch error
+                    if 'version' in error_msg and ('chromedriver' in error_msg or 'chrome version' in error_msg):
+                        self.logger.warning(f"ChromeDriver version mismatch detected: {str(e)}")
+                        
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            # Strategy 1: If using local ChromeDriver and it has version mismatch, try auto-download
+                            if driver_executable_path and os.path.exists(driver_executable_path):
+                                self.logger.info(f"Local ChromeDriver version mismatch, retrying with auto-download (attempt {retry_count}/{max_retries})...")
+                                driver_executable_path = None  # Force auto-download
+                                chrome_version = None  # Let undetected_chromedriver auto-detect
+                                time.sleep(2)
+                                continue
+                            # Strategy 2: If we specified a version and it failed, try auto-detection instead
+                            elif chrome_version is not None:
+                                self.logger.info(f"Retrying with auto-detection (attempt {retry_count}/{max_retries})...")
+                                chrome_version = None  # Let undetected_chromedriver auto-detect
+                                time.sleep(2)
+                                continue
+                            # Strategy 3: Try without any version specification
+                            else:
+                                self.logger.info(f"Retrying without version specification (attempt {retry_count}/{max_retries})...")
+                                chrome_version = None
+                                time.sleep(2)
+                                continue
+                        else:
+                            self.logger.error(f"Failed to initialize ChromeDriver after version mismatch retries: {str(e)}")
+                            self.logger.error("Please update Chrome browser or ChromeDriver to matching versions")
+                            self.logger.error("You can also delete the local ChromeDriver to force auto-download of correct version")
+                            raise
+                    
                     # Check if it's a network/timeout error
-                    if any(keyword in error_msg for keyword in ['timeout', 'connection', 'failed', 'urlopen', '10060']):
+                    elif any(keyword in error_msg for keyword in ['timeout', 'connection', 'failed', 'urlopen', '10060']):
                         retry_count += 1
                         if driver_executable_path and os.path.exists(driver_executable_path) and retry_count < max_retries:
                             self.logger.warning(f"Network error during initialization (attempt {retry_count}/{max_retries}): {str(e)}")
