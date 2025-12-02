@@ -63,17 +63,17 @@ class ScuderiaCarPartsScraper(BaseScraper):
             page_loaded = False
             
             while retry_count < max_retries and not page_loaded:
-                try:
+            try:
                     self.page_load_timeout = 90  # Increased to 90 seconds
                     self.driver.set_page_load_timeout(90)
-                    
+                
                     self.logger.info(f"Attempting to load search page (attempt {retry_count + 1}/{max_retries})...")
-                    self.driver.get(search_url)
-                    time.sleep(3)  # Wait for initial page load
+                self.driver.get(search_url)
+                time.sleep(3)  # Wait for initial page load
                     page_loaded = True
                     self.logger.info("✓ Search page loaded successfully")
-                    
-                except Exception as e:
+                
+            except Exception as e:
                     error_str = str(e).lower()
                     retry_count += 1
                     
@@ -114,13 +114,13 @@ class ScuderiaCarPartsScraper(BaseScraper):
                             time.sleep(wait_time)
                         else:
                             self.logger.error("❌ Failed to load search page after all retries")
-                finally:
-                    # Restore original timeout
-                    try:
-                        self.page_load_timeout = original_timeout
-                        self.driver.set_page_load_timeout(original_timeout)
-                    except:
-                        pass
+            finally:
+                # Restore original timeout
+                try:
+                    self.page_load_timeout = original_timeout
+                    self.driver.set_page_load_timeout(original_timeout)
+                except:
+                    pass
             
             if not page_loaded:
                 self.logger.error("❌ Could not load search page, returning empty product list")
@@ -452,24 +452,24 @@ class ScuderiaCarPartsScraper(BaseScraper):
                     
                     # If not found by ID, try by text content
                     if not load_more_button:
-                        try:
-                            # Use XPath to find button/link containing "Load more" text (case-insensitive)
-                            load_more_button = self.driver.find_element(
-                                By.XPATH, 
-                                "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'load more')] | //a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'load more')]"
-                            )
-                        except NoSuchElementException:
-                            # Try CSS selectors
-                            for selector in load_more_selectors:
-                                try:
-                                    if selector.startswith("button:") or selector.startswith("a:"):
-                                        # These are jQuery-style selectors, skip for now
-                                        continue
-                                    load_more_button = self.driver.find_element(By.CSS_SELECTOR, selector)
-                                    if load_more_button:
-                                        break
-                                except NoSuchElementException:
+                    try:
+                        # Use XPath to find button/link containing "Load more" text (case-insensitive)
+                        load_more_button = self.driver.find_element(
+                            By.XPATH, 
+                            "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'load more')] | //a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'load more')]"
+                        )
+                    except NoSuchElementException:
+                        # Try CSS selectors
+                        for selector in load_more_selectors:
+                            try:
+                                if selector.startswith("button:") or selector.startswith("a:"):
+                                    # These are jQuery-style selectors, skip for now
                                     continue
+                                load_more_button = self.driver.find_element(By.CSS_SELECTOR, selector)
+                                if load_more_button:
+                                    break
+                            except NoSuchElementException:
+                                continue
                     
                     if load_more_button:
                         # Check if button is visible and enabled
@@ -598,13 +598,13 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                                 self.logger.info("No more 'Load more results' button found or button not clickable")
                                             break
                                 else:
-                                    self.logger.warning(f"Error clicking load more button: {str(click_error)}")
-                                    # Try JavaScript click as fallback
-                                    try:
-                                        self.driver.execute_script("arguments[0].click();", load_more_button)
-                                        load_more_clicked += 1
-                                        consecutive_no_button = 0
-                                        self.logger.info(f"✓ Clicked 'Load more results' button via JavaScript (click #{load_more_clicked})")
+                                self.logger.warning(f"Error clicking load more button: {str(click_error)}")
+                                # Try JavaScript click as fallback
+                                try:
+                                    self.driver.execute_script("arguments[0].click();", load_more_button)
+                                    load_more_clicked += 1
+                                    consecutive_no_button = 0
+                                    self.logger.info(f"✓ Clicked 'Load more results' button via JavaScript (click #{load_more_clicked})")
                                         time.sleep(1)
                                         wait_for_loading_overlay_to_disappear(timeout=10)
                                         time.sleep(2)
@@ -624,9 +624,9 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                                 break
                                         else:
                                             consecutive_no_button = 0
-                                    except Exception as js_click_error:
-                                        self.logger.warning(f"JavaScript click also failed: {str(js_click_error)}")
-                                        consecutive_no_button += 1
+                                except Exception as js_click_error:
+                                    self.logger.warning(f"JavaScript click also failed: {str(js_click_error)}")
+                                    consecutive_no_button += 1
                                     if consecutive_no_button >= max_consecutive_no_button:
                                         self.logger.info("No more 'Load more results' button found or button not clickable")
                                     break
@@ -1107,7 +1107,7 @@ class ScuderiaCarPartsScraper(BaseScraper):
                 
                 # Fallback: try h1 with class 'product-title'
                 if not product_data['title']:
-                    title_elem = soup.find('h1', class_='product-title')
+                title_elem = soup.find('h1', class_='product-title')
                     if title_elem:
                         product_data['title'] = title_elem.get_text(strip=True)
                 
@@ -1189,12 +1189,12 @@ class ScuderiaCarPartsScraper(BaseScraper):
                 
                 # Fallback: try other common selectors
                 if not product_data['sku']:
-                    sku_elem = (soup.find('span', class_=re.compile(r'sku|part.*number|part-number', re.I)) or
-                               soup.find('div', class_=re.compile(r'sku|part.*number|part-number', re.I)) or
-                               soup.find('span', class_='sku-display') or
-                               soup.find('span', id=re.compile(r'sku|part.*number', re.I)) or
-                               soup.find('div', id=re.compile(r'sku|part.*number', re.I)))
-                    if sku_elem:
+                sku_elem = (soup.find('span', class_=re.compile(r'sku|part.*number|part-number', re.I)) or
+                           soup.find('div', class_=re.compile(r'sku|part.*number|part-number', re.I)) or
+                           soup.find('span', class_='sku-display') or
+                           soup.find('span', id=re.compile(r'sku|part.*number', re.I)) or
+                           soup.find('div', id=re.compile(r'sku|part.*number', re.I)))
+                if sku_elem:
                         raw_text = sku_elem.get_text(strip=True)
                         part_number = extract_part_number(raw_text)
                         if part_number:
@@ -1266,13 +1266,13 @@ class ScuderiaCarPartsScraper(BaseScraper):
                 
                 # Fallback: try other common selectors
                 if not product_data['actual_price']:
-                    sale_price_elem = (soup.find('span', class_=re.compile(r'sale.*price|price.*sale|current.*price', re.I)) or
-                                     soup.find('div', class_=re.compile(r'sale.*price|price.*sale|current.*price', re.I)) or
-                                     soup.find('strong', class_=re.compile(r'sale.*price|price.*sale', re.I)) or
-                                     soup.find('span', class_='sale-price') or
-                                     soup.find('span', class_='price') or
-                                     soup.find('div', class_='price'))
-                    if sale_price_elem:
+                sale_price_elem = (soup.find('span', class_=re.compile(r'sale.*price|price.*sale|current.*price', re.I)) or
+                                 soup.find('div', class_=re.compile(r'sale.*price|price.*sale|current.*price', re.I)) or
+                                 soup.find('strong', class_=re.compile(r'sale.*price|price.*sale', re.I)) or
+                                 soup.find('span', class_='sale-price') or
+                                 soup.find('span', class_='price') or
+                                 soup.find('div', class_='price'))
+                if sale_price_elem:
                         price_text = sale_price_elem.get_text(strip=True)
                         # Check if price contains EUR symbol
                         if '€' in price_text or 'EUR' in price_text.upper():
@@ -1338,10 +1338,10 @@ class ScuderiaCarPartsScraper(BaseScraper):
                 
                 # Fallback: try other common selectors
                 if not img_elem:
-                    img_elem = (soup.find('img', class_=re.compile(r'product.*image|main.*image', re.I)) or
-                              soup.find('img', id=re.compile(r'product.*image|main.*image', re.I)) or
-                              soup.find('img', class_='product-main-image') or
-                              soup.find('img', class_='product-image') or
+                img_elem = (soup.find('img', class_=re.compile(r'product.*image|main.*image', re.I)) or
+                          soup.find('img', id=re.compile(r'product.*image|main.*image', re.I)) or
+                          soup.find('img', class_='product-main-image') or
+                          soup.find('img', class_='product-image') or
                               (soup.find('div', class_=re.compile(r'product.*image', re.I)).find('img') if soup.find('div', class_=re.compile(r'product.*image', re.I)) else None))
                 
                 if img_elem:
@@ -1795,23 +1795,23 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                             
                                             # Keep the full model string with year range as model
                                             # Model is already set above: "Range Rover Evoque (2012-2018)"
-                                            
+                                                
                                             # Only add if we have at least model
                                             if model:
-                                                fitment_entry = {
-                                                    'year': year,
-                                                    'make': make,
-                                                    'model': model,
+                                                    fitment_entry = {
+                                                        'year': year,
+                                                        'make': make,
+                                                        'model': model,
                                                     'trim': '',
-                                                    'engine': engine
-                                                }
-                                                # Check if this fitment is already added
-                                                if fitment_entry not in product_data['fitments']:
-                                                    product_data['fitments'].append(fitment_entry)
+                                                        'engine': engine
+                                                    }
+                                                    # Check if this fitment is already added
+                                                    if fitment_entry not in product_data['fitments']:
+                                                        product_data['fitments'].append(fitment_entry)
                                                 self.logger.debug(f"Extracted fitment: {model} ({year}) [{engine}]")
-                                        except Exception as e:
-                                            self.logger.debug(f"Error parsing fitment row: {str(e)}")
-                                            continue
+                                            except Exception as e:
+                                                self.logger.debug(f"Error parsing fitment row: {str(e)}")
+                                                continue
                                 
                             # If no table found, try to find fitment text in other elements
                             if not product_data['fitments']:
@@ -1861,21 +1861,21 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                                             make = f"{model_words[0]} {model_words[1]}"
                                             
                                             if model:
-                                                fitment_entry = {
-                                                    'year': year,
-                                                    'make': make,
+                                                        fitment_entry = {
+                                                            'year': year,
+                                                            'make': make,
                                                     'model': model,  # Keep full model string with year range
-                                                    'trim': '',
+                                                            'trim': '',
                                                     'engine': engine
-                                                }
-                                                if fitment_entry not in product_data['fitments']:
-                                                    product_data['fitments'].append(fitment_entry)
-                                    except:
-                                        continue
+                                                        }
+                                                        if fitment_entry not in product_data['fitments']:
+                                                            product_data['fitments'].append(fitment_entry)
+                                                except:
+                                continue
                         
                         if product_data['fitments']:
                             self.logger.info(f"✅ Extracted {len(product_data['fitments'])} fitment combinations from Fitment Details tab")
-                        else:
+                    else:
                             self.logger.warning("No fitments found in Fitment Details tab")
                     except Exception as e:
                         self.logger.warning(f"Error extracting fitments from Fitment Details tab: {str(e)}")
