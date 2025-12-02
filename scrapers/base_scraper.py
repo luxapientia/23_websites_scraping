@@ -249,8 +249,48 @@ class BaseScraper(ABC):
                     # Maximize window if not headless
                     try:
                         self.driver.maximize_window()
-                    except:
-                        pass  # Window maximization is optional
+                        # Verify window is still open after maximization
+                        if not self.driver.window_handles:
+                            raise Exception("Window closed immediately after maximization")
+                    except Exception as window_error:
+                        error_msg = str(window_error).lower()
+                        if 'no such window' in error_msg or 'target window already closed' in error_msg:
+                            self.logger.warning(f"Window closed during maximization: {str(window_error)}")
+                            # Try to create a new window
+                            try:
+                                self.driver.switch_to.new_window('tab')
+                                self.logger.info("Created new window after closure")
+                            except:
+                                raise Exception(f"Failed to recover from window closure: {str(window_error)}")
+                        else:
+                            # Window maximization is optional, but log the error
+                            self.logger.debug(f"Window maximization failed (non-critical): {str(window_error)}")
+                    
+                    # Wait a moment for window to stabilize
+                    time.sleep(1)
+                    
+                    # Final verification that driver and window are valid
+                    if not self.driver:
+                        raise Exception("Driver is None after initialization")
+                    
+                    # Check window handles multiple times to ensure stability
+                    window_check_attempts = 3
+                    window_stable = False
+                    for attempt in range(window_check_attempts):
+                        try:
+                            handles = self.driver.window_handles
+                            if handles:
+                                window_stable = True
+                                break
+                        except Exception as check_error:
+                            if attempt < window_check_attempts - 1:
+                                time.sleep(0.5)  # Wait before retry
+                                continue
+                            else:
+                                raise Exception(f"No window handles available after initialization: {str(check_error)}")
+                    
+                    if not window_stable:
+                        raise Exception("Window is not stable after initialization")
                     
                     driver_initialized = True
                     self.logger.info(f"Browser initialized successfully for {self.site_name}")
@@ -275,58 +315,96 @@ class BaseScraper(ABC):
                         self.logger.error(f"Failed to initialize ChromeDriver: {str(e)}")
                         raise
             
+            # Verify driver is still valid before proceeding
+            if not self.driver:
+                raise Exception("Driver initialization failed - driver is None")
+            
+            # Check if window is still open
+            try:
+                # Try to get window handles to verify window is open
+                window_handles = self.driver.window_handles
+                if not window_handles:
+                    raise Exception("No window handles found - window may have closed")
+            except Exception as window_check_error:
+                self.logger.error(f"Window check failed: {str(window_check_error)}")
+                raise Exception(f"Browser window is not available: {str(window_check_error)}")
+            
+            # Small delay to ensure window is fully ready
+            time.sleep(0.5)
+            
             # Set timeouts - increased to allow undetected_chromedriver to handle Cloudflare
             # undetected_chromedriver needs more time to automatically bypass Cloudflare challenges
-            self.page_load_timeout = 60  # Increased from 30 to 60 seconds for Cloudflare bypass
-            self.driver.set_page_load_timeout(60)  # Increased to allow Cloudflare challenge completion
-            self.driver.implicitly_wait(5)  # Increased from 2 to 5 seconds for element finding
-            self.driver.set_script_timeout(30)  # Increased from 10 to 30 seconds for JavaScript execution (Cloudflare uses JS)
+            try:
+                self.page_load_timeout = 60  # Increased from 30 to 60 seconds for Cloudflare bypass
+                self.driver.set_page_load_timeout(60)  # Increased to allow Cloudflare challenge completion
+                self.driver.implicitly_wait(5)  # Increased from 2 to 5 seconds for element finding
+                self.driver.set_script_timeout(30)  # Increased from 10 to 30 seconds for JavaScript execution (Cloudflare uses JS)
+            except Exception as timeout_error:
+                self.logger.warning(f"Error setting timeouts (may be non-critical): {str(timeout_error)}")
+                # Continue anyway - timeouts might already be set
             
             # Additional anti-detection scripts - Enhanced
-            self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
-                'source': '''
-                    // Remove webdriver property
-                    Object.defineProperty(navigator, 'webdriver', {
-                        get: () => undefined
-                    });
-                    
-                    // Fake plugins
-                    Object.defineProperty(navigator, 'plugins', {
-                        get: () => [1, 2, 3, 4, 5]
-                    });
-                    
-                    // Set languages
-                    Object.defineProperty(navigator, 'languages', {
-                        get: () => ['en-US', 'en']
-                    });
-                    
-                    // Add chrome object
-                    window.chrome = {
-                        runtime: {},
-                        loadTimes: function() {},
-                        csi: function() {},
-                        app: {}
-                    };
-                    
-                    // Override permissions
-                    const originalQuery = window.navigator.permissions.query;
-                    window.navigator.permissions.query = (parameters) => (
-                        parameters.name === 'notifications' ?
-                            Promise.resolve({ state: Notification.permission }) :
-                            originalQuery(parameters)
-                    );
-                    
-                    // Override getBattery
-                    if (navigator.getBattery) {
-                        navigator.getBattery = () => Promise.resolve({
-                            charging: true,
-                            chargingTime: 0,
-                            dischargingTime: Infinity,
-                            level: 1
-                        });
-                    }
-                '''
-            })
+            # Wrap in try-except to handle cases where window closes during execution
+            try:
+                # Verify window is still open before executing CDP command
+                if self.driver and self.driver.window_handles:
+                    self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+                        'source': '''
+                            // Remove webdriver property
+                            Object.defineProperty(navigator, 'webdriver', {
+                                get: () => undefined
+                            });
+                            
+                            // Fake plugins
+                            Object.defineProperty(navigator, 'plugins', {
+                                get: () => [1, 2, 3, 4, 5]
+                            });
+                            
+                            // Set languages
+                            Object.defineProperty(navigator, 'languages', {
+                                get: () => ['en-US', 'en']
+                            });
+                            
+                            // Add chrome object
+                            window.chrome = {
+                                runtime: {},
+                                loadTimes: function() {},
+                                csi: function() {},
+                                app: {}
+                            };
+                            
+                            // Override permissions
+                            const originalQuery = window.navigator.permissions.query;
+                            window.navigator.permissions.query = (parameters) => (
+                                parameters.name === 'notifications' ?
+                                    Promise.resolve({ state: Notification.permission }) :
+                                    originalQuery(parameters)
+                            );
+                            
+                            // Override getBattery
+                            if (navigator.getBattery) {
+                                navigator.getBattery = () => Promise.resolve({
+                                    charging: true,
+                                    chargingTime: 0,
+                                    dischargingTime: Infinity,
+                                    level: 1
+                                });
+                            }
+                        '''
+                    })
+                else:
+                    self.logger.warning("Window closed before CDP command execution - skipping anti-detection scripts")
+            except Exception as cdp_error:
+                error_msg = str(cdp_error).lower()
+                # Check if it's a window closed error
+                if 'no such window' in error_msg or 'target window already closed' in error_msg or 'web view not found' in error_msg:
+                    self.logger.warning(f"Window closed during CDP command execution (non-critical): {str(cdp_error)}")
+                    # This is not critical - undetected_chromedriver already has built-in anti-detection
+                    # Continue without the additional scripts
+                else:
+                    # Other CDP errors - log but don't fail
+                    self.logger.warning(f"Error executing CDP command (non-critical): {str(cdp_error)}")
+                    # Continue anyway - undetected_chromedriver has built-in anti-detection
             
             # Additional CDP commands for better stealth
             # REMOVED: Hardcoded origin - this was suspicious and site-specific

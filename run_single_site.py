@@ -6,10 +6,26 @@ import atexit
 import gc
 from datetime import datetime
 
-from scrapers.tascaparts_scraper import TascaPartsScraper
-from scrapers.acurapartswarehouse_scraper import AcuraPartsWarehouseScraper
-from scrapers.moparonlineparts_scraper import MoparOnlinePartsScraper
-from scrapers.scuderiacarparts_scraper import ScuderiaCarPartsScraper
+from scrapers.audiusa_scraper import AudiUSAScraper
+from scrapers.bmw_scraper import BMWScraper
+from scrapers.gm_oemparts_scraper import GMOemPartsScraper
+from scrapers.ford_scraper import FordScraper
+from scrapers.honda_scraper import HondaScraper
+from scrapers.hyundai_scraper import HyundaiScraper
+from scrapers.infiniti_scraper import InfinitiScraper
+from scrapers.jaguar_scraper import JaguarScraper
+from scrapers.kia_scraper import KiaScraper
+from scrapers.landrover_scraper import LandRoverScraper
+from scrapers.lexus_scraper import LexusScraper
+from scrapers.mazda_scraper import MazdaScraper
+from scrapers.mercedes_scraper import MercedesScraper
+from scrapers.mitsubishi_scraper import MitsubishiScraper
+from scrapers.nissan_scraper import NissanScraper
+from scrapers.porsche_scraper import PorscheScraper
+from scrapers.subaru_scraper import SubaruScraper
+from scrapers.toyota_scraper import ToyotaScraper
+from scrapers.volkswagen_scraper import VolkswagenScraper
+from scrapers.volvo_scraper import VolvoScraper
 from scrapers.generic_scraper import GenericScraper
 from utils.data_processor import DataProcessor
 from utils.excel_exporter import ExcelExporter
@@ -73,6 +89,46 @@ def create_scraper(site_config):
         return MoparOnlinePartsScraper()
     elif site_name == 'scuderiacarparts':
         return ScuderiaCarPartsScraper()
+    elif site_name == 'audiusa':
+        return AudiUSAScraper()
+    elif site_name == 'bmw':
+        return BMWScraper()
+    elif site_name == 'gm_oemparts':
+        return GMOemPartsScraper()
+    elif site_name == 'ford':
+        return FordScraper()
+    elif site_name == 'honda':
+        return HondaScraper()
+    elif site_name == 'hyundai':
+        return HyundaiScraper()
+    elif site_name == 'infiniti':
+        return InfinitiScraper()
+    elif site_name == 'jaguar':
+        return JaguarScraper()
+    elif site_name == 'kia':
+        return KiaScraper()
+    elif site_name == 'landrover':
+        return LandRoverScraper()
+    elif site_name == 'lexus':
+        return LexusScraper()
+    elif site_name == 'mazda':
+        return MazdaScraper()
+    elif site_name == 'mercedes':
+        return MercedesScraper()
+    elif site_name == 'mitsubishi':
+        return MitsubishiScraper()
+    elif site_name == 'nissan':
+        return NissanScraper()
+    elif site_name == 'porsche':
+        return PorscheScraper()
+    elif site_name == 'subaru':
+        return SubaruScraper()
+    elif site_name == 'toyota':
+        return ToyotaScraper()
+    elif site_name == 'volkswagen':
+        return VolkswagenScraper()
+    elif site_name == 'volvo':
+        return VolvoScraper()
     else:
         return GenericScraper(site_config)
 
@@ -88,15 +144,35 @@ def main():
         print("  - acuraparts")
         print("  - moparonline")
         print("  - scuderiacarparts")
-        print("  - honda")
+        print("  - audiusa")
+        print("  - bmw")
+        print("  - gm_oemparts")
         print("  - ford")
+        print("  - honda")
+        print("  - hyundai")
+        print("  - infiniti")
+        print("  - jaguar")
+        print("  - kia")
+        print("  - landrover")
+        print("  - lexus")
+        print("  - mazda")
+        print("  - mercedes")
+        print("  - mitsubishi")
+        print("  - nissan")
+        print("  - porsche")
+        print("  - subaru")
         print("  - toyota")
+        print("  - volkswagen")
+        print("  - volvo")
         print("  - etc. (see config/sites_config.json)")
         print("\nExample:")
         print("  python run_single_site.py tascaparts")
         print("  python run_single_site.py acuraparts")
         print("  python run_single_site.py moparonline")
         print("  python run_single_site.py scuderiacarparts")
+        print("  python run_single_site.py audiusa")
+        print("  python run_single_site.py bmw")
+        print("  python run_single_site.py toyota")
         sys.exit(1)
     
     site_name = sys.argv[1]
