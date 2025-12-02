@@ -820,36 +820,64 @@ class BMWScraper(BaseScraper):
                 self.logger.warning(f"Error checking if wheel product: {self.safe_str(e)}")
                 return None
             
-            # Extract price - Priority: <meta itemprop="price" content="179.50"> or <span class="productPriceSpan money-3">$ 179.50</span>
-            price_meta = soup.find('meta', {'itemprop': 'price'})
-            if price_meta:
-                price_content = price_meta.get('content', '').strip()
-                if price_content:
-                    try:
-                        product_data['actual_price'] = float(price_content)
-                        self.logger.info(f"💰 Found price from meta: {self.safe_str(product_data['actual_price'])}")
-                    except (ValueError, TypeError):
-                        pass
+            # Extract price - Priority 1: JSON script tag with id="product_data"
+            product_data_script = soup.find('script', type='application/json', id='product_data')
+            if product_data_script and product_data_script.string:
+                try:
+                    product_json = json.loads(product_data_script.string)
+                    if isinstance(product_json, dict):
+                        if 'price' in product_json:
+                            try:
+                                product_data['actual_price'] = float(product_json['price'])
+                                self.logger.info(f"💰 Found price from product_data JSON: {self.safe_str(product_data['actual_price'])}")
+                            except (ValueError, TypeError):
+                                pass
+                        if 'msrp' in product_json and not product_data.get('msrp'):
+                            try:
+                                product_data['msrp'] = float(product_json['msrp'])
+                                self.logger.info(f"💰 Found MSRP from product_data JSON: {self.safe_str(product_data['msrp'])}")
+                            except (ValueError, TypeError):
+                                pass
+                        if 'description' in product_json and not product_data.get('description'):
+                            desc_html = product_json['description']
+                            if desc_html:
+                                # Parse HTML description to extract text
+                                desc_soup = BeautifulSoup(desc_html, 'lxml')
+                                desc_text = desc_soup.get_text(strip=True, separator=' ')
+                                desc_text = re.sub(r'\s+', ' ', desc_text).strip()
+                                if desc_text:
+                                    product_data['description'] = desc_text
+                                    self.logger.info(f"📄 Found description from product_data JSON: {self.safe_str(desc_text[:60])}")
+                except (json.JSONDecodeError, KeyError, AttributeError, Exception) as e:
+                    self.logger.debug(f"Error parsing product_data JSON: {str(e)}")
             
-            # Fallback: <span class="productPriceSpan money-3">$ 179.50</span>
+            # Extract price - Priority 2: <strong id="product_price" class="sale-price-value sale-price-amount">$955.50</strong>
             if not product_data['actual_price']:
-                price_span = soup.find('span', class_=lambda x: x and 'productPriceSpan' in ' '.join(x) if isinstance(x, list) else 'productPriceSpan' in str(x))
-                if not price_span:
-                    price_span = soup.find('span', class_=lambda x: x and 'money-3' in ' '.join(x) if isinstance(x, list) else 'money-3' in str(x))
+                price_elem = soup.find('strong', id='product_price')
+                if not price_elem:
+                    price_elem = soup.find('strong', class_=lambda x: x and 'sale-price-value' in ' '.join(x) if isinstance(x, list) else 'sale-price-value' in str(x))
+                if not price_elem:
+                    price_elem = soup.find('strong', class_=lambda x: x and 'sale-price-amount' in ' '.join(x) if isinstance(x, list) else 'sale-price-amount' in str(x))
                 
-                if price_span:
-                    price_text = price_span.get_text(strip=True)
+                if price_elem:
+                    price_text = price_elem.get_text(strip=True)
                     if price_text:
-                        if '€' in price_text or 'EUR' in price_text.upper():
-                            price_value = self.extract_price(price_text)
-                            if price_value:
-                                product_data['actual_price'] = self.convert_currency(price_value, 'EUR', 'USD')
-                                self.logger.info(f"💰 Found price (EUR converted): {self.safe_str(product_data['actual_price'])}")
-                        else:
-                            price_value = self.extract_price(price_text)
-                            if price_value:
-                                product_data['actual_price'] = price_value
-                                self.logger.info(f"💰 Found price: {self.safe_str(product_data['actual_price'])}")
+                        price_value = self.extract_price(price_text)
+                        if price_value:
+                            product_data['actual_price'] = price_value
+                            self.logger.info(f"💰 Found price from product_price: {self.safe_str(product_data['actual_price'])}")
+            
+            # Fallback: <meta itemprop="price" content="179.50">
+            if not product_data['actual_price']:
+                price_meta = soup.find('meta', {'itemprop': 'price'})
+                if price_meta:
+                    price_content = price_meta.get('content', '').strip()
+                    if price_content:
+                        try:
+                            product_data['actual_price'] = float(price_content)
+                            self.logger.info(f"💰 Found price from meta: {self.safe_str(product_data['actual_price'])}")
+                        except (ValueError, TypeError):
+                            pass
             
             # Fallback: JSON-LD structured data
             if not product_data['actual_price']:
@@ -881,13 +909,20 @@ class BMWScraper(BaseScraper):
                     if product_data['actual_price']:
                         self.logger.info(f"💰 Found price: {self.safe_str(product_data['actual_price'])}")
             
-            # Extract MSRP
-            msrp_elem = soup.find('span', class_=re.compile(r'list.*price|msrp', re.I))
-            if not msrp_elem:
-                msrp_elem = soup.find('del', class_=re.compile(r'price', re.I))
-            if msrp_elem:
-                msrp_text = self.safe_find_text(soup, msrp_elem)
-                product_data['msrp'] = self.extract_price(msrp_text)
+            # Extract MSRP - Priority 1: Already checked JSON above, now check HTML
+            if not product_data.get('msrp'):
+                msrp_elem = soup.find('span', id='product_price2')
+                if not msrp_elem:
+                    msrp_elem = soup.find('span', class_=lambda x: x and 'list-price-value' in ' '.join(x) if isinstance(x, list) else 'list-price-value' in str(x))
+                if not msrp_elem:
+                    msrp_elem = soup.find('span', class_=re.compile(r'list.*price|msrp', re.I))
+                if not msrp_elem:
+                    msrp_elem = soup.find('del', class_=re.compile(r'price', re.I))
+                if msrp_elem:
+                    msrp_text = msrp_elem.get_text(strip=True)
+                    product_data['msrp'] = self.extract_price(msrp_text)
+                    if product_data['msrp']:
+                        self.logger.info(f"💰 Found MSRP from HTML: {self.safe_str(product_data['msrp'])}")
             
             # Extract image - Priority: <img itemprop="image" src="..." class="img-responsive img-thumbnail">
             img_elem = soup.find('img', {'itemprop': 'image'})
@@ -928,22 +963,42 @@ class BMWScraper(BaseScraper):
             if product_data.get('image_url') and not product_data['image_url'].startswith('http'):
                 product_data['image_url'] = f"https:{product_data['image_url']}"
             
-            # Extract description - Priority: <div class="item-desc"><p>...</p></div>
-            desc_div = soup.find('div', class_=lambda x: x and 'item-desc' in ' '.join(x) if isinstance(x, list) else 'item-desc' in str(x))
-            if desc_div:
-                desc_paragraphs = desc_div.find_all('p')
-                desc_parts = []
-                for p in desc_paragraphs:
-                    p_text = p.get_text(strip=True, separator=' ')
-                    if p_text:
-                        desc_parts.append(p_text)
-                
-                if desc_parts:
-                    desc_text = ' '.join(desc_parts)
-                    desc_text = re.sub(r'\s+', ' ', desc_text).strip()
-                    if desc_text and len(desc_text) > 10:
-                        product_data['description'] = desc_text
-                        self.logger.info(f"📄 Found description: {self.safe_str(desc_text[:60])}")
+            # Extract description - Priority 1: Already checked JSON above, now check HTML
+            # Priority 2: <span class="description_body"><p>Style 625, front.</p></span>
+            if not product_data.get('description'):
+                desc_span = soup.find('span', class_=lambda x: x and 'description_body' in ' '.join(x) if isinstance(x, list) else 'description_body' in str(x))
+                if desc_span:
+                    desc_paragraphs = desc_span.find_all('p')
+                    desc_parts = []
+                    for p in desc_paragraphs:
+                        p_text = p.get_text(strip=True, separator=' ')
+                        if p_text:
+                            desc_parts.append(p_text)
+                    
+                    if desc_parts:
+                        desc_text = ' '.join(desc_parts)
+                        desc_text = re.sub(r'\s+', ' ', desc_text).strip()
+                        if desc_text:
+                            product_data['description'] = desc_text
+                            self.logger.info(f"📄 Found description from description_body: {self.safe_str(desc_text[:60])}")
+            
+            # Fallback: <div class="item-desc"><p>...</p></div>
+            if not product_data['description']:
+                desc_div = soup.find('div', class_=lambda x: x and 'item-desc' in ' '.join(x) if isinstance(x, list) else 'item-desc' in str(x))
+                if desc_div:
+                    desc_paragraphs = desc_div.find_all('p')
+                    desc_parts = []
+                    for p in desc_paragraphs:
+                        p_text = p.get_text(strip=True, separator=' ')
+                        if p_text:
+                            desc_parts.append(p_text)
+                    
+                    if desc_parts:
+                        desc_text = ' '.join(desc_parts)
+                        desc_text = re.sub(r'\s+', ' ', desc_text).strip()
+                        if desc_text and len(desc_text) > 10:
+                            product_data['description'] = desc_text
+                            self.logger.info(f"📄 Found description: {self.safe_str(desc_text[:60])}")
             
             # Fallback: meta itemprop="description"
             if not product_data['description']:
