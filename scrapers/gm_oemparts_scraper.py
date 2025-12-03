@@ -441,24 +441,26 @@ class GMOemPartsScraper(BaseScraper):
         }
         
         try:
-            # Extract title - try multiple selectors
-            title_elem = soup.find('h1', class_='product-title')
-            if not title_elem:
-                title_elem = soup.find('h1')
-            if not title_elem:
-                title_elem = soup.find('meta', property='og:title')
-                if title_elem:
-                    product_data['title'] = title_elem.get('content', '').strip()
-                else:
-                    title_tag = soup.find('title')
-                    if title_tag:
-                        title_text = title_tag.get_text(strip=True)
-                        if '|' in title_text:
-                            title_text = title_text.split('|')[0].strip()
-                        product_data['title'] = title_text
-            
-            if title_elem and not product_data['title']:
+            # Extract title - try multiple selectors (priority: h1 > og:title > title tag)
+            title_elem = soup.find('h1')
+            if title_elem:
                 product_data['title'] = title_elem.get_text(strip=True)
+            
+            if not product_data['title'] or len(product_data['title']) < 3:
+                # Try meta og:title
+                og_title = soup.find('meta', property='og:title')
+                if og_title:
+                    product_data['title'] = og_title.get('content', '').strip()
+            
+            if not product_data['title'] or len(product_data['title']) < 3:
+                # Try title tag as last resort
+                title_tag = soup.find('title')
+                if title_tag:
+                    title_text = title_tag.get_text(strip=True)
+                    # Clean up title: "2018 Chevrolet Traverse Wheel 84439174 | OEM Parts Online"
+                    if '|' in title_text:
+                        title_text = title_text.split('|')[0].strip()
+                    product_data['title'] = title_text
             
             if not product_data['title'] or len(product_data['title']) < 3:
                 self.logger.warning(f"⚠️ No valid title found for {url}")
@@ -467,14 +469,22 @@ class GMOemPartsScraper(BaseScraper):
             self.logger.info(f"📝 Found title: {self.safe_str(product_data['title'][:60])}")
             
             # Extract SKU/Part Number - try multiple selectors
-            sku_elem = soup.find('span', class_='sku-display')
-            if not sku_elem:
-                sku_elem = soup.find('h2', class_='sku-display')
-            if not sku_elem:
-                sku_elem = soup.find('span', class_=re.compile(r'sku|part.*number', re.I))
+            sku_elem = soup.find('span', class_=re.compile(r'sku|part.*number', re.I))
             if not sku_elem:
                 sku_elem = soup.find('div', class_=re.compile(r'sku|part.*number', re.I))
-            if sku_elem:
+            if not sku_elem:
+                sku_elem = soup.find('h2', class_=re.compile(r'sku|part.*number', re.I))
+            if not sku_elem:
+                # Try to extract from title or URL if it contains part number
+                # Example: "2018 Chevrolet Traverse Wheel 84439174"
+                title_words = product_data['title'].split()
+                for word in reversed(title_words):
+                    if word.isdigit() and len(word) >= 6:  # Part numbers are usually 6+ digits
+                        product_data['sku'] = word
+                        product_data['pn'] = self.clean_sku(word)
+                        break
+            
+            if sku_elem and not product_data['sku']:
                 product_data['sku'] = sku_elem.get_text(strip=True)
                 product_data['pn'] = self.clean_sku(product_data['sku'])
             
@@ -489,54 +499,93 @@ class GMOemPartsScraper(BaseScraper):
                 return None
             
             # Extract sale price - try multiple selectors
-            sale_price_elem = soup.find('strong', class_='sale-price-value')
+            sale_price_elem = soup.find('strong', id='product_price')
             if not sale_price_elem:
-                sale_price_elem = soup.find('strong', id='product_price')
+                sale_price_elem = soup.find('strong', class_=re.compile(r'sale.*price', re.I))
             if not sale_price_elem:
-                sale_price_elem = soup.find('span', class_='sale-price-value')
+                sale_price_elem = soup.find('span', id='product_price')
             if not sale_price_elem:
                 sale_price_elem = soup.find('span', class_=re.compile(r'sale.*price', re.I))
             if not sale_price_elem:
-                sale_price_elem = soup.find('div', class_=re.compile(r'sale.*price', re.I))
-            if sale_price_elem:
+                sale_price_elem = soup.find('div', class_=re.compile(r'sale.*price|price.*value', re.I))
+            if not sale_price_elem:
+                # Try meta tag
+                price_meta = soup.find('meta', itemprop='price')
+                if price_meta:
+                    product_data['actual_price'] = self.extract_price(price_meta.get('content', ''))
+            
+            if sale_price_elem and not product_data['actual_price']:
                 price_text = sale_price_elem.get_text(strip=True)
                 product_data['actual_price'] = self.extract_price(price_text)
             
             # Extract MSRP - try multiple selectors
-            msrp_elem = soup.find('span', class_='list-price-value')
-            if not msrp_elem:
-                msrp_elem = soup.find('span', id='product_price2')
+            msrp_elem = soup.find('span', id='product_price2')
             if not msrp_elem:
                 msrp_elem = soup.find('span', class_=re.compile(r'list.*price', re.I))
             if not msrp_elem:
                 msrp_elem = soup.find('div', class_=re.compile(r'msrp|list.*price', re.I))
+            if not msrp_elem:
+                # Try to find "compared" price (MSRP is often shown as comparison)
+                msrp_elem = soup.find('span', class_=re.compile(r'compared|compare.*price', re.I))
+            
             if msrp_elem:
                 msrp_text = msrp_elem.get_text(strip=True)
                 product_data['msrp'] = self.extract_price(msrp_text)
             
-            # Extract image URL
-            img_elem = soup.find('img', class_='product-main-image')
-            if not img_elem:
-                img_elem = soup.find('img', class_=re.compile(r'product.*image|main.*image', re.I))
+            # Extract image URL - try multiple sources
+            img_elem = soup.find('img', class_=re.compile(r'product.*image|main.*image', re.I))
             if not img_elem:
                 img_elem = soup.find('img', itemprop='image')
-            if img_elem:
-                img_url = img_elem.get('src') or img_elem.get('data-src') or img_elem.get('data-lazy-src')
-                if img_url:
-                    product_data['image_url'] = f"https:{img_url}" if img_url.startswith('//') else img_url
+            if not img_elem:
+                # Try to find any product-related image
+                img_elem = soup.find('img', {'src': re.compile(r'product|part|wheel', re.I)})
             
-            # Extract description
-            desc_elem = soup.find('span', class_='description_body')
-            if not desc_elem:
-                desc_elem = soup.find('li', class_='description')
-                if desc_elem:
-                    desc_elem = desc_elem.find('span', class_='list-value')
-            if not desc_elem:
-                desc_elem = soup.find('div', class_=re.compile(r'description|product.*description', re.I))
+            if img_elem:
+                img_url = img_elem.get('src') or img_elem.get('data-src') or img_elem.get('data-lazy-src') or img_elem.get('data-original')
+                if img_url:
+                    # Normalize image URL
+                    if img_url.startswith('//'):
+                        product_data['image_url'] = f"https:{img_url}"
+                    elif img_url.startswith('/'):
+                        product_data['image_url'] = f"{self.base_url}{img_url}"
+                    else:
+                        product_data['image_url'] = img_url
+            
+            # Fallback: try og:image meta tag
+            if not product_data['image_url']:
+                og_image = soup.find('meta', property='og:image')
+                if og_image:
+                    img_url = og_image.get('content', '')
+                    if img_url:
+                        if img_url.startswith('//'):
+                            product_data['image_url'] = f"https:{img_url}"
+                        elif img_url.startswith('/'):
+                            product_data['image_url'] = f"{self.base_url}{img_url}"
+                        else:
+                            product_data['image_url'] = img_url
+            
+            # Extract description - try multiple sources
+            # First try meta og:description (often contains structured description)
+            desc_elem = soup.find('meta', property='og:description')
             if desc_elem:
-                desc_text = desc_elem.get_text(strip=True, separator=' ')
-                desc_text = re.sub(r'\s+', ' ', desc_text)
-                product_data['description'] = desc_text.strip()
+                product_data['description'] = desc_elem.get('content', '').strip()
+            
+            # If not found, try HTML elements
+            if not product_data['description']:
+                desc_elem = soup.find('span', class_='description_body')
+                if not desc_elem:
+                    desc_elem = soup.find('li', class_='description')
+                    if desc_elem:
+                        desc_elem = desc_elem.find('span', class_='list-value')
+                if not desc_elem:
+                    desc_elem = soup.find('div', class_=re.compile(r'description|product.*description', re.I))
+                if not desc_elem:
+                    desc_elem = soup.find('p', class_=re.compile(r'description', re.I))
+                
+                if desc_elem:
+                    desc_text = desc_elem.get_text(strip=True, separator=' ')
+                    desc_text = re.sub(r'\s+', ' ', desc_text)
+                    product_data['description'] = desc_text.strip()
             
             # Extract also_known_as (Other Names)
             also_known_elem = soup.find('li', class_='also_known_as')
@@ -559,19 +608,36 @@ class GMOemPartsScraper(BaseScraper):
                     product_data['replaces'] = value_elem.get_text(strip=True)
             
             # Extract fitment data from JSON script tag
-            script_elem = soup.find('script', id='product_data')
+            # Priority: script with id="product_data" and type="application/json"
+            script_elem = soup.find('script', {'type': 'application/json', 'id': 'product_data'})
             if not script_elem:
-                # Try alternative script tags
+                # Try just id="product_data"
+                script_elem = soup.find('script', id='product_data')
+            if not script_elem:
+                # Try alternative script tags with type="application/json"
                 script_tags = soup.find_all('script', type='application/json')
                 for tag in script_tags:
-                    if tag.string and 'fitment' in tag.string.lower():
+                    if tag.string and ('fitment' in tag.string.lower() or 'vehicle' in tag.string.lower()):
                         script_elem = tag
                         break
             
             if script_elem and script_elem.string:
                 try:
                     product_json = json.loads(script_elem.string)
+                    
+                    # Try multiple possible keys for fitment data
                     fitments = product_json.get('fitment', [])
+                    if not fitments:
+                        fitments = product_json.get('fitments', [])
+                    if not fitments:
+                        fitments = product_json.get('vehicles', [])
+                    if not fitments and isinstance(product_json, dict):
+                        # Sometimes fitment is nested
+                        for key in ['product', 'data', 'details']:
+                            if key in product_json and isinstance(product_json[key], dict):
+                                fitments = product_json[key].get('fitment', []) or product_json[key].get('fitments', [])
+                                if fitments:
+                                    break
                     
                     for fitment in fitments:
                         try:
@@ -580,6 +646,12 @@ class GMOemPartsScraper(BaseScraper):
                             model = fitment.get('model', '').strip()
                             trims = fitment.get('trims', [])
                             engines = fitment.get('engines', [])
+                            
+                            # Handle case where trim/engine might be single values
+                            if not isinstance(trims, list):
+                                trims = [trims] if trims else ['']
+                            if not isinstance(engines, list):
+                                engines = [engines] if engines else ['']
                             
                             # Create a row for each trim/engine combination
                             if not trims:
@@ -600,7 +672,8 @@ class GMOemPartsScraper(BaseScraper):
                             self.logger.debug(f"Error processing fitment: {str(fitment_error)}")
                             continue
                     
-                    self.logger.info(f"✅ Extracted {len(product_data['fitments'])} fitment combinations")
+                    if product_data['fitments']:
+                        self.logger.info(f"✅ Extracted {len(product_data['fitments'])} fitment combinations")
                     
                 except json.JSONDecodeError as e:
                     self.logger.warning(f"Error parsing JSON: {str(e)}")

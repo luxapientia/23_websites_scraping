@@ -645,7 +645,7 @@ class AudiUSAScraper(BaseScraper):
                             return None
                     
                     # Enhanced blocking detection
-                    page_content_length = len(html)
+                        page_content_length = len(html)
                     page_text_lower = html.lower()
                     
                     # Check for blocking messages in page content

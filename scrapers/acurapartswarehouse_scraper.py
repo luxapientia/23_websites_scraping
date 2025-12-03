@@ -755,8 +755,8 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                         full_url = full_url.split('#')[0]
                     
                     # Extract only the base product URL, remove query params
-                    if '?' in full_url:
-                        full_url = full_url.split('?')[0]
+                        if '?' in full_url:
+                            full_url = full_url.split('?')[0]
                     
                     # Normalize trailing slashes
                     full_url = full_url.rstrip('/')
@@ -890,8 +890,8 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                                 full_url = full_url.split('#')[0]
                             
                             # Remove query params
-                            if '?' in full_url:
-                                full_url = full_url.split('?')[0]
+                                if '?' in full_url:
+                                    full_url = full_url.split('?')[0]
                             
                             full_url = full_url.rstrip('/')
                             
@@ -1644,13 +1644,13 @@ class AcuraPartsWarehouseScraper(BaseScraper):
                                         trims = f.get('trims', [])
                                         if isinstance(trims, str): trims = [trims]
                                         if not trims: trims = ['']
-                                        
-                                        for trim in trims:
+                                
+                                for trim in trims:
                                             fitment_rows.append({
-                                                'year': year,
-                                                'make': make,
-                                                'model': model,
-                                                'trim': trim,
+                                            'year': year,
+                                            'make': make,
+                                            'model': model,
+                                            'trim': trim,
                                                 'engine': f.get('engine', '')
                                             })
                             except: continue

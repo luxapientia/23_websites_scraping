@@ -1352,7 +1352,8 @@ class BaseScraper(ABC):
             'alloy wheel',  # Already there but ensure it's clear
             'wheel rim',  # Ensure lowercase version
             'rims',  # Plural form
-            'wheels',  # Plural form
+            'wheels',  # Plural form,
+            'Rear'
                        
     ]
     

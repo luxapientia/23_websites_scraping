@@ -103,15 +103,17 @@ class ScuderiaCarPartsScraper(BaseScraper):
     
     def _search_for_wheels(self):
         """
-        Search for wheels using site search with new workflow:
+        Search for wheels using site search with incremental workflow:
         1. Load search page
-        2. Click "Load more results" button until all search results are loaded
-        3. After all results are loaded, find all needed product URLs from the entire page
-        4. Collect information (scrape all products)
-        5. Export Excel with all products
+        2. Loop:
+           a. Click "Load more results" button 10 times
+           b. Extract product URLs from NEWLY loaded products (only those loaded in this batch)
+           c. Scrape those products
+           d. Export to Excel
+           e. Repeat until no more "Load more results" button is available
         """
-        product_urls = []  # Track all URLs
-        load_more_clicked = 0  # Track how many times we've clicked the load button
+        product_urls = []  # Track all URLs (for return value)
+        batch_number = 0  # Track batch number for Excel export
         
         try:
             if not self.driver:
@@ -287,8 +289,7 @@ class ScuderiaCarPartsScraper(BaseScraper):
                             containers = self.driver.find_elements(By.CSS_SELECTOR, container_selector)
                             if containers and len(containers) > 0:
                                 count = len(containers)
-                                if count > 1000:
-                                    self.logger.debug(f"Found {count} containers using selector: {container_selector[:50]}")
+                                self.logger.info(f"Found {count} containers using selector: {container_selector}")
                                 return count
                         except Exception as e:
                             self.logger.debug(f"Error counting containers with selector {container_selector}: {str(e)[:50]}")
@@ -361,6 +362,7 @@ class ScuderiaCarPartsScraper(BaseScraper):
                             
                             if containers and len(containers) > 0:
                                 containers_found = True
+                                self.logger.info(f"✓ Found {len(containers)} containers using selector: {container_selector}")
                                 
                                 # Only process containers from start_index onwards (NEW containers)
                                 if end_index is None:
@@ -369,13 +371,47 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                     containers_to_process = containers[start_index:end_index]
                                 
                                 num_to_process = len(containers_to_process)
-                                if num_to_process > 100:
-                                    self.logger.info(f"Processing {num_to_process} NEW containers (indices {start_index} to {len(containers) if end_index is None else end_index}) - this may take a moment...")
-                                else:
-                                    self.logger.debug(f"Processing {num_to_process} NEW containers (indices {start_index} to {len(containers) if end_index is None else end_index})")
+                                if num_to_process > 0:
+                                    self.logger.info(f"Processing {num_to_process} containers (indices {start_index} to {len(containers) if end_index is None else end_index})...")
                                 
                                 if selector_elapsed > 2:
                                     self.logger.debug(f"Finding containers with selector took {selector_elapsed:.1f}s")
+                                
+                                # Sample first few containers to debug structure
+                                if num_to_process > 0 and start_index == 0:
+                                    sample_size = min(3, num_to_process)
+                                    self.logger.info(f"Sampling first {sample_size} containers to check structure...")
+                                    for sample_idx in range(sample_size):
+                                        try:
+                                            sample_container = containers_to_process[sample_idx]
+                                            # Try to get some info about the container
+                                            try:
+                                                container_html = sample_container.get_attribute('outerHTML')[:200]
+                                                self.logger.debug(f"Sample container {sample_idx} HTML preview: {container_html}...")
+                                            except:
+                                                pass
+                                            
+                                            # Try to find a link
+                                            try:
+                                                sample_link = sample_container.find_element(By.CSS_SELECTOR, "a")
+                                                sample_href = sample_link.get_attribute('href')
+                                                if sample_href:
+                                                    self.logger.debug(f"Sample container {sample_idx} has link: {sample_href[:80]}")
+                                            except:
+                                                self.logger.debug(f"Sample container {sample_idx} has no link found")
+                                            
+                                            # Try to find title
+                                            try:
+                                                sample_title_elem = sample_container.find_element(By.CSS_SELECTOR, "div.mt-md strong, strong, h3, h4")
+                                                sample_title = sample_title_elem.text.strip() if sample_title_elem else ''
+                                                if sample_title:
+                                                    self.logger.debug(f"Sample container {sample_idx} title: {sample_title[:60]}")
+                                                else:
+                                                    self.logger.debug(f"Sample container {sample_idx} has no title found")
+                                            except:
+                                                self.logger.debug(f"Sample container {sample_idx} title extraction failed")
+                                        except Exception as e:
+                                            self.logger.debug(f"Error sampling container {sample_idx}: {str(e)[:50]}")
                                 
                                 # Process containers with progress logging for large batches
                                 processed = 0
@@ -390,42 +426,31 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                             remaining = (num_to_process - (idx + 1)) / rate if rate > 0 else 0
                                             self.logger.info(f"  Processing container {idx + 1}/{num_to_process} ({((idx + 1) / num_to_process * 100):.1f}%) - ETA: {remaining:.1f}s")
                                         
-                                        # Extract title
-                                        title = ''
+                                        # Extract URL FIRST (before title check) - we can check if wheel later
+                                        href = None
                                         try:
-                                            name_elem = container.find_element(By.CSS_SELECTOR, "div.mt-md strong")
-                                            if name_elem:
-                                                product_name = name_elem.text.strip()
-                                                
-                                                # Get description
-                                                desc_elems = container.find_elements(By.CSS_SELECTOR, "div.mt-xs.text-sm")
-                                                description = ''
-                                                for desc in desc_elems:
-                                                    desc_text = desc.text.strip()
-                                                    if desc_text and not any(label in desc_text.upper() for label in ['TO ORDER', 'IN STOCK', 'OUT OF STOCK', 'AVAILABLE']):
-                                                        if not desc.find_elements(By.CSS_SELECTOR, "span.label"):
-                                                            description = desc_text
-                                                            break
-                                                
-                                                if description:
-                                                    description = re.sub(r'\s*(To Order|In Stock|Out of Stock|Available).*', '', description, flags=re.IGNORECASE)
-                                                    title = f"{product_name} {description}".strip()
-                                                else:
-                                                    title = product_name
-                                        except:
-                                            pass
-                                        
-                                        # Check if wheel product
-                                        if title and len(title) >= 3 and self.is_wheel_product(title):
-                                            # Extract URL
-                                            href = None
-                                            try:
-                                                link_elem = container.find_element(By.CSS_SELECTOR, "a")
-                                                if link_elem:
-                                                    href = link_elem.get_attribute('href')
-                                            except:
-                                                pass
+                                            # Try multiple selectors for the link
+                                            link_selectors = [
+                                                "a",
+                                                "a[href*='/product/']",
+                                                "a[href*='/item/']",
+                                                "a[href*='/part/']",
+                                                "a[href*='/catalog/']",
+                                                ".product-link",
+                                                "[data-product-url]",
+                                            ]
                                             
+                                            for link_selector in link_selectors:
+                                                try:
+                                                    link_elem = container.find_element(By.CSS_SELECTOR, link_selector)
+                                                    if link_elem:
+                                                        href = link_elem.get_attribute('href')
+                                                        if href and href != 'javascript:void(0)' and href != '#' and not href.startswith('javascript:'):
+                                                            break
+                                                except:
+                                                    continue
+                                            
+                                            # Fallback: try onclick attribute
                                             if not href:
                                                 try:
                                                     onclick = container.get_attribute('onclick')
@@ -436,38 +461,126 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                                 except:
                                                     pass
                                             
+                                            # Fallback: try data attributes
                                             if not href:
-                                                href = container.get_attribute('data-url') or container.get_attribute('data-href')
+                                                href = container.get_attribute('data-url') or container.get_attribute('data-href') or container.get_attribute('data-link')
                                             
-                                            if href and href != 'javascript:void(0)' and href != '#':
-                                                if href.startswith('javascript:'):
-                                                    continue
+                                            # Fallback: try any link within container using BeautifulSoup
+                                            if not href:
+                                                try:
+                                                    container_html = container.get_attribute('outerHTML')
+                                                    if container_html:
+                                                        container_soup = BeautifulSoup(container_html, 'lxml')
+                                                        link = container_soup.find('a', href=True)
+                                                        if link:
+                                                            href = link.get('href', '')
+                                                except:
+                                                    pass
+                                        except Exception as e:
+                                            if idx < 5:  # Log first few errors for debugging
+                                                self.logger.debug(f"Error extracting URL from container {idx}: {str(e)[:100]}")
+                                        
+                                        # If we have a URL, extract title and check if wheel product
+                                        if href and href != 'javascript:void(0)' and href != '#' and not href.startswith('javascript:'):
+                                            # Normalize URL
+                                            full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                                            if '#' in full_url:
+                                                full_url = full_url.split('#')[0]
+                                            if '?' in full_url:
+                                                full_url = full_url.split('?')[0]
+                                            full_url = full_url.rstrip('/')
+                                            
+                                            # Skip non-product URLs
+                                            skip_patterns = ['/search/', '/category/', '/cart/', '/checkout/', '/account/', '/login/', '/contact/', '/about/']
+                                            if any(exclude in full_url.lower() for exclude in skip_patterns):
+                                                continue
+                                            
+                                            # Extract title for wheel product check
+                                            title = ''
+                                            try:
+                                                # Try multiple selectors for title
+                                                title_selectors = [
+                                                    "div.mt-md strong",
+                                                    "div.mt-md",
+                                                    "strong",
+                                                    "h3",
+                                                    "h4",
+                                                    ".product-name",
+                                                    "[data-product-name]",
+                                                ]
                                                 
-                                                full_url = href if href.startswith('http') else f"{self.base_url}{href}"
-                                                if '#' in full_url:
-                                                    full_url = full_url.split('#')[0]
-                                                if '?' in full_url:
-                                                    full_url = full_url.split('?')[0]
-                                                full_url = full_url.rstrip('/')
+                                                for title_selector in title_selectors:
+                                                    try:
+                                                        name_elem = container.find_element(By.CSS_SELECTOR, title_selector)
+                                                        if name_elem:
+                                                            product_name = name_elem.text.strip()
+                                                            if product_name:
+                                                                title = product_name
+                                                                break
+                                                    except:
+                                                        continue
                                                 
-                                                skip_patterns = ['/search/', '/category/', '/cart/', '/checkout/', '/account/', '/login/']
-                                                if not any(exclude in full_url.lower() for exclude in skip_patterns):
-                                                    if full_url not in current_urls:
-                                                        current_urls.append(full_url)
-                                                        processed += 1
+                                                # Try to get description to enhance title
+                                                if title:
+                                                    try:
+                                                        desc_elems = container.find_elements(By.CSS_SELECTOR, "div.mt-xs.text-sm, div.text-sm, .product-description")
+                                                        description = ''
+                                                        for desc in desc_elems:
+                                                            desc_text = desc.text.strip()
+                                                            if desc_text and len(desc_text) > 5:
+                                                                # Skip stock status labels
+                                                                if not any(label in desc_text.upper() for label in ['TO ORDER', 'IN STOCK', 'OUT OF STOCK', 'AVAILABLE', 'PRICE']):
+                                                                    if not desc.find_elements(By.CSS_SELECTOR, "span.label"):
+                                                                        description = desc_text
+                                                                        break
+                                                        
+                                                        if description:
+                                                            description = re.sub(r'\s*(To Order|In Stock|Out of Stock|Available|Price:).*', '', description, flags=re.IGNORECASE)
+                                                            title = f"{title} {description}".strip()
+                                                    except:
+                                                        pass
+                                            except Exception as e:
+                                                if idx < 5:
+                                                    self.logger.debug(f"Error extracting title from container {idx}: {str(e)[:50]}")
+                                            
+                                            # Check if wheel product (if we have title) OR if URL looks like a product URL
+                                            is_wheel = False
+                                            if title and len(title) >= 3:
+                                                is_wheel = self.is_wheel_product(title)
+                                                if idx < 5:  # Debug first few
+                                                    self.logger.debug(f"Container {idx}: title='{title[:50]}', is_wheel={is_wheel}")
+                                            else:
+                                                # If no title, check if URL looks like a product URL
+                                                product_url_patterns = ['/product/', '/item/', '/part/', '/catalog/', '/p/']
+                                                if any(pattern in full_url.lower() for pattern in product_url_patterns):
+                                                    # Assume it's a product and check later during scraping
+                                                    is_wheel = True
+                                                    if idx < 5:
+                                                        self.logger.debug(f"Container {idx}: No title, but URL looks like product: {full_url[:80]}")
+                                            
+                                            if is_wheel:
+                                                if full_url not in current_urls:
+                                                    current_urls.append(full_url)
+                                                    processed += 1
+                                                    if processed <= 10:  # Log first 10 found URLs
+                                                        self.logger.debug(f"Found wheel product URL #{processed}: {full_url[:80]}")
                                     except Exception as e:
                                         # Log errors for debugging but continue
                                         if idx < 10:  # Only log first few errors to avoid spam
-                                            self.logger.debug(f"Error processing container {idx}: {str(e)[:50]}")
+                                            self.logger.warning(f"Error processing container {idx}: {str(e)[:100]}")
+                                            import traceback
+                                            self.logger.debug(f"Traceback: {traceback.format_exc()}")
                                         continue
                                 
                                 extraction_elapsed = time.time() - extraction_start
-                                if extraction_elapsed > 5:
+                                if extraction_elapsed > 5 or num_to_process > 0:
                                     self.logger.info(f"✓ Processed {num_to_process} containers in {extraction_elapsed:.1f}s, found {len(current_urls)} wheel product URLs")
                                 
                                 if current_urls:
+                                    self.logger.info(f"✓ Successfully extracted URLs using selector: {container_selector}")
                                     break
-                        except:
+                        except Exception as e:
+                            self.logger.debug(f"Error with selector {container_selector}: {str(e)[:100]}")
                             continue
                     
                     # Fallback: Use BeautifulSoup if Selenium didn't find containers
@@ -498,173 +611,336 @@ class ScuderiaCarPartsScraper(BaseScraper):
                             
                             for idx, container in enumerate(containers_to_process):
                                 try:
-                                    title = ''
-                                    name_div = container.find('div', class_='mt-md')
-                                    if name_div:
-                                        name_strong = name_div.find('strong')
-                                        if name_strong:
-                                            product_name = name_strong.get_text(strip=True)
-                                            desc_divs = container.find_all('div', class_=re.compile(r'mt-xs.*text-sm', re.I))
-                                            description = ''
-                                            for desc_div in desc_divs:
-                                                desc_text = desc_div.get_text(strip=True)
-                                                if desc_text and not any(label in desc_text.upper() for label in ['TO ORDER', 'IN STOCK']):
-                                                    if not desc_div.find('span', class_='label'):
-                                                        description = desc_text
-                                                        break
-                                            
-                                            if description:
-                                                title = f"{product_name} {description}".strip()
-                                            else:
-                                                title = product_name
+                                    # Extract URL FIRST (before title check)
+                                    href = None
+                                    link = container.find('a', href=True)
+                                    if link:
+                                        href = link.get('href', '')
                                     
-                                    if title and len(title) >= 3 and self.is_wheel_product(title):
-                                        link = container.find('a', href=True)
-                                        if link:
-                                            href = link.get('href', '')
-                                            if href and href != 'javascript:void(0)' and href != '#':
-                                                full_url = href if href.startswith('http') else f"{self.base_url}{href}"
-                                                if '#' in full_url:
-                                                    full_url = full_url.split('#')[0]
-                                                if '?' in full_url:
-                                                    full_url = full_url.split('?')[0]
-                                                full_url = full_url.rstrip('/')
+                                    # Fallback: try data attributes
+                                    if not href:
+                                        href = container.get('data-url') or container.get('data-href') or container.get('data-link')
+                                    
+                                    # Fallback: try onclick
+                                    if not href:
+                                        onclick = container.get('onclick', '')
+                                        if onclick:
+                                            match = re.search(r"window\.location\s*=\s*['\"]([^'\"]+)['\"]", onclick)
+                                            if match:
+                                                href = match.group(1)
+                                    
+                                    # If we have a URL, process it
+                                    if href and href != 'javascript:void(0)' and href != '#' and not href.startswith('javascript:'):
+                                        # Normalize URL
+                                        full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                                        if '#' in full_url:
+                                            full_url = full_url.split('#')[0]
+                                        if '?' in full_url:
+                                            full_url = full_url.split('?')[0]
+                                        full_url = full_url.rstrip('/')
+                                        
+                                        # Skip non-product URLs
+                                        skip_patterns = ['/search/', '/category/', '/cart/', '/checkout/', '/account/', '/login/', '/contact/', '/about/']
+                                        if any(exclude in full_url.lower() for exclude in skip_patterns):
+                                            continue
+                                        
+                                        # Extract title for wheel product check
+                                        title = ''
+                                        try:
+                                            # Try multiple selectors for title
+                                            name_div = container.find('div', class_='mt-md')
+                                            if name_div:
+                                                name_strong = name_div.find('strong')
+                                                if name_strong:
+                                                    title = name_strong.get_text(strip=True)
+                                            
+                                            # Fallback selectors
+                                            if not title:
+                                                title_elem = container.find(['h3', 'h4', 'strong', 'span'], class_=re.compile(r'product|name|title', re.I))
+                                                if title_elem:
+                                                    title = title_elem.get_text(strip=True)
+                                            
+                                            # Try to get description to enhance title
+                                            if title:
+                                                desc_divs = container.find_all('div', class_=re.compile(r'mt-xs.*text-sm|text-sm', re.I))
+                                                description = ''
+                                                for desc_div in desc_divs:
+                                                    desc_text = desc_div.get_text(strip=True)
+                                                    if desc_text and len(desc_text) > 5:
+                                                        # Skip stock status labels
+                                                        if not any(label in desc_text.upper() for label in ['TO ORDER', 'IN STOCK', 'OUT OF STOCK', 'AVAILABLE', 'PRICE']):
+                                                            if not desc_div.find('span', class_='label'):
+                                                                description = desc_text
+                                                                break
                                                 
-                                                if full_url not in current_urls:
-                                                    current_urls.append(full_url)
+                                                if description:
+                                                    description = re.sub(r'\s*(To Order|In Stock|Out of Stock|Available|Price:).*', '', description, flags=re.IGNORECASE)
+                                                    title = f"{title} {description}".strip()
+                                        except:
+                                            pass
+                                        
+                                        # Check if wheel product (if we have title) OR if URL looks like a product URL
+                                        is_wheel = False
+                                        if title and len(title) >= 3:
+                                            is_wheel = self.is_wheel_product(title)
+                                            if idx < 5:  # Debug first few
+                                                self.logger.debug(f"BS Container {idx}: title='{title[:50]}', is_wheel={is_wheel}")
+                                        else:
+                                            # If no title, check if URL looks like a product URL
+                                            product_url_patterns = ['/product/', '/item/', '/part/', '/catalog/', '/p/']
+                                            if any(pattern in full_url.lower() for pattern in product_url_patterns):
+                                                # Assume it's a product and check later during scraping
+                                                is_wheel = True
+                                                if idx < 5:
+                                                    self.logger.debug(f"BS Container {idx}: No title, but URL looks like product: {full_url[:80]}")
+                                        
+                                        if is_wheel:
+                                            if full_url not in current_urls:
+                                                current_urls.append(full_url)
+                                                if len(current_urls) <= 10:  # Log first 10 found URLs
+                                                    self.logger.debug(f"Found wheel product URL #{len(current_urls)}: {full_url[:80]}")
                                 except Exception as e:
                                     if idx < 10:  # Only log first few errors
-                                        self.logger.debug(f"Error processing container {idx} in BeautifulSoup fallback: {str(e)[:50]}")
+                                        self.logger.warning(f"Error processing container {idx} in BeautifulSoup fallback: {str(e)[:100]}")
+                                        import traceback
+                                        self.logger.debug(f"Traceback: {traceback.format_exc()}")
                                     continue
                         except Exception as e:
                             self.logger.warning(f"Error in BeautifulSoup fallback: {str(e)[:100]}")
                 
                 except Exception as e:
                     self.logger.warning(f"Error extracting URLs from containers: {str(e)[:100]}")
+                    import traceback
+                    self.logger.debug(f"Traceback: {traceback.format_exc()}")
+                
+                # Final summary and fallback if no URLs found
+                if len(current_urls) == 0:
+                    self.logger.warning("⚠️ No product URLs extracted. Attempting comprehensive fallback search...")
+                    try:
+                        # Try to find ANY product links on the page using a broader search
+                        all_links = self.driver.find_elements(By.CSS_SELECTOR, "a[href]")
+                        product_links = []
+                        product_url_patterns = ['/product/', '/item/', '/part/', '/catalog/', '/p/', '/products/']
+                        skip_patterns = ['/search/', '/category/', '/cart/', '/checkout/', '/account/', '/login/', '/contact/', '/about/']
+                        
+                        self.logger.info(f"Scanning {min(len(all_links), 500)} links for product URLs...")
+                        for link in all_links[:500]:  # Check first 500 links
+                            try:
+                                href = link.get_attribute('href')
+                                if href and href != 'javascript:void(0)' and href != '#' and not href.startswith('javascript:'):
+                                    href_lower = href.lower()
+                                    # Check if it looks like a product URL
+                                    if any(pattern in href_lower for pattern in product_url_patterns):
+                                        # Check if it's not a skip pattern
+                                        if not any(exclude in href_lower for exclude in skip_patterns):
+                                            # Normalize URL
+                                            full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                                            if '#' in full_url:
+                                                full_url = full_url.split('#')[0]
+                                            if '?' in full_url:
+                                                full_url = full_url.split('?')[0]
+                                            full_url = full_url.rstrip('/')
+                                            
+                                            if full_url not in product_links:
+                                                product_links.append(full_url)
+                            except:
+                                continue
+                        
+                        if product_links:
+                            self.logger.warning(f"⚠️ Found {len(product_links)} product URLs via fallback search (container-based extraction failed)")
+                            self.logger.info(f"Sample URLs from fallback: {product_links[:5]}")
+                            # Add them to current_urls (we'll filter by wheel product during scraping)
+                            current_urls.extend(product_links)
+                            current_urls = list(set(current_urls))  # Remove duplicates
+                            self.logger.info(f"✓ Added {len(current_urls)} URLs from fallback search")
+                        else:
+                            self.logger.warning("⚠️ No product-like URLs found on page at all - page may not have loaded correctly")
+                            # Try to get page info for debugging
+                            try:
+                                page_title = self.driver.title
+                                current_url = self.driver.current_url
+                                self.logger.warning(f"Page title: {page_title[:100]}")
+                                self.logger.warning(f"Current URL: {current_url[:100]}")
+                            except:
+                                pass
+                    except Exception as diag_error:
+                        self.logger.warning(f"Fallback search failed: {str(diag_error)[:100]}")
+                        import traceback
+                        self.logger.debug(f"Traceback: {traceback.format_exc()}")
+                else:
+                    self.logger.info(f"✓ Successfully extracted {len(current_urls)} product URLs")
+                    if len(current_urls) <= 20:
+                        self.logger.info(f"Extracted URLs: {current_urls[:10]}")
                 
                 return current_urls
             
-            # NEW WORKFLOW: Load all results first, then scrape and export
-            # Step 1: Click "Load more results" button until all search results are loaded
-            self.logger.info("="*70)
-            self.logger.info("STEP 1: Clicking 'Load more results' button until all results are loaded...")
-            self.logger.info("="*70)
-            consecutive_no_button = 0
-            max_consecutive_no_button = 3  # Stop after 3 consecutive attempts with no button
-            max_iterations = 100  # Safety limit to prevent infinite loops
+            # INCREMENTAL WORKFLOW: Click 10 times, extract new products, scrape, export, repeat
+            # Track container count to extract only NEW products each batch
+            last_container_count = 0
+            max_clicks_per_batch = 10  # Click 10 times per batch
+            max_batches = 100  # Safety limit for batches
             
-            iteration = 0
-            while iteration < max_iterations:
-                iteration += 1
-                try:
-                    # CRITICAL: Wait for loading overlay to disappear before trying to click
-                    wait_for_loading_overlay_to_disappear(timeout=5)
+            # Main loop: repeat the cycle of clicking, extracting, scraping, and exporting
+            while batch_number < max_batches:
+                batch_number += 1
+                self.logger.info("="*70)
+                self.logger.info(f"BATCH #{batch_number}: Starting new batch...")
+                self.logger.info("="*70)
+                
+                # Step 1: Count current containers before clicking (for logging)
+                current_container_count = count_product_containers()
+                self.logger.info(f"Container count before batch #{batch_number}: {current_container_count} (last was: {last_container_count})")
+                
+                # Step 2: Click "Load more results" button 10 times
+                self.logger.info(f"Clicking 'Load more results' button {max_clicks_per_batch} times...")
+                clicks_this_batch = 0
+                consecutive_no_button = 0
+                max_consecutive_no_button = 3
+                
+                iteration = 0
+                max_iterations = 20  # Safety limit per batch
+                while iteration < max_iterations and clicks_this_batch < max_clicks_per_batch:
+                    iteration += 1
+                    try:
+                        # CRITICAL: Wait for loading overlay to disappear before trying to click
+                        wait_for_loading_overlay_to_disappear(timeout=5)
                         
-                    # Try multiple selectors for the "Load more results" button
-                    load_more_selectors = [
+                        # Try multiple selectors for the "Load more results" button
+                        load_more_selectors = [
                         "button:contains('Load more results')",
                         "button:contains('Load More')",
                         "a:contains('Load more results')",
                         "a:contains('Load More')",
-                        ".load-more",
-                        "#load-more",
-                        "button.load-more",
-                        "a.load-more",
-                        "button[class*='load']",
-                        "a[class*='load']",
-                        "button[data-action='load-more']",
-                        "a[data-action='load-more']",
-                        "#load_more_results",
-                        "a#load_more_results",
-                    ]
-                    
-                    load_more_button = None
-                    
-                    # First, try to find by ID (most specific)
-                    try:
-                        load_more_button = self.driver.find_element(By.ID, "load_more_results")
-                    except NoSuchElementException:
-                        pass
-                    
-                    # If not found by ID, try by text content
-                    if not load_more_button:
+                            ".load-more",
+                            "#load-more",
+                            "button.load-more",
+                            "a.load-more",
+                            "button[class*='load']",
+                            "a[class*='load']",
+                            "button[data-action='load-more']",
+                            "a[data-action='load-more']",
+                            "#load_more_results",
+                            "a#load_more_results",
+                        ]
+                        
+                        load_more_button = None
+                        
+                        # First, try to find by ID (most specific)
                         try:
-                            # Use XPath to find button/link containing "Load more" text (case-insensitive)
-                            load_more_button = self.driver.find_element(
-                                By.XPATH, 
-                                "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'load more')] | //a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'load more')]"
-                            )
+                            load_more_button = self.driver.find_element(By.ID, "load_more_results")
                         except NoSuchElementException:
-                            # Try CSS selectors
-                            for selector in load_more_selectors:
-                                try:
-                                    if selector.startswith("button:") or selector.startswith("a:"):
-                                        # These are jQuery-style selectors, skip for now
-                                        continue
-                                    load_more_button = self.driver.find_element(By.CSS_SELECTOR, selector)
-                                    if load_more_button:
-                                        break
-                                except NoSuchElementException:
-                                    continue
-                    
-                    if load_more_button:
-                        # Check if button is visible and enabled
-                        if load_more_button.is_displayed() and load_more_button.is_enabled():
-                            # Scroll to button to ensure it's in view
-                            self.driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", load_more_button)
-                            time.sleep(0.5)  # Wait for scroll
-                            
-                            # CRITICAL: Wait for loading overlay to disappear before clicking
-                            wait_for_loading_overlay_to_disappear(timeout=5)
-                            
-                            # Click the button
+                            pass
+                        
+                        # If not found by ID, try by text content
+                        if not load_more_button:
                             try:
-                                load_more_button.click()
-                                load_more_clicked += 1
-                                consecutive_no_button = 0  # Reset counter
-                                self.logger.info(f"✓ Clicked 'Load more results' button (click #{load_more_clicked})")
-                                
-                                # Wait for loading overlay to appear and then disappear (content is loading)
-                                time.sleep(1)  # Brief wait for overlay to appear
-                                wait_for_loading_overlay_to_disappear(timeout=10)  # Wait for content to load
-                                
-                                # Wait for new product containers to appear in DOM
-                                try:
-                                    WebDriverWait(self.driver, 5).until(
-                                        lambda d: len(d.find_elements(By.CSS_SELECTOR, "div[class*='product'], div[class*='item'], [data-product-id], .product-card, .product-item")) > 0
-                                    )
-                                except:
-                                    pass  # Products might already be there
-                                
-                                # Additional wait for new products to fully render
-                                time.sleep(2)
-                                
-                                # Scroll down a bit to trigger lazy loading if any
-                                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                                time.sleep(1)
-                                
-                            except Exception as click_error:
-                                error_str = str(click_error).lower()
-                                if 'click intercepted' in error_str or 'loadingoverlay' in error_str:
-                                    # Loading overlay is blocking - wait for it to disappear
-                                    self.logger.debug("Loading overlay blocking click, waiting for it to disappear...")
-                                    wait_for_loading_overlay_to_disappear(timeout=10)
-                                    # Try again after overlay disappears
+                                # Use XPath to find button/link containing "Load more" text (case-insensitive)
+                                load_more_button = self.driver.find_element(
+                                    By.XPATH, 
+                                    "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'load more')] | //a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'load more')]"
+                                )
+                            except NoSuchElementException:
+                                # Try CSS selectors
+                                for selector in load_more_selectors:
                                     try:
-                                        load_more_button.click()
-                                        load_more_clicked += 1
-                                        consecutive_no_button = 0
-                                        self.logger.info(f"✓ Clicked 'Load more results' button after waiting for overlay (click #{load_more_clicked})")
-                                        time.sleep(1)
-                                        wait_for_loading_overlay_to_disappear(timeout=10)
-                                        time.sleep(2)
+                                        if selector.startswith("button:") or selector.startswith("a:"):
+                                            # These are jQuery-style selectors, skip for now
+                                            continue
+                                        load_more_button = self.driver.find_element(By.CSS_SELECTOR, selector)
+                                        if load_more_button:
+                                            break
+                                    except NoSuchElementException:
+                                        continue
+                        
+                        if load_more_button:
+                            # Check if button is visible and enabled
+                            if load_more_button.is_displayed() and load_more_button.is_enabled():
+                                # Scroll to button to ensure it's in view
+                                self.driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", load_more_button)
+                                time.sleep(0.5)  # Wait for scroll
+                                
+                                # CRITICAL: Wait for loading overlay to disappear before clicking
+                                wait_for_loading_overlay_to_disappear(timeout=5)
+                                
+                                # Click the button
+                                try:
+                                    load_more_button.click()
+                                    clicks_this_batch += 1
+                                    consecutive_no_button = 0  # Reset counter
+                                    self.logger.info(f"✓ Clicked 'Load more results' button (batch #{batch_number}, click #{clicks_this_batch}/{max_clicks_per_batch})")
+                                    
+                                    # Check if we've reached the click limit for this batch
+                                    if clicks_this_batch >= max_clicks_per_batch:
+                                        self.logger.info(f"✓ Reached click limit for batch #{batch_number} ({max_clicks_per_batch} clicks), proceeding to extract new products...")
+                                        break
+                                    
+                                    # Wait for loading overlay to appear and then disappear (content is loading)
+                                    time.sleep(1)  # Brief wait for overlay to appear
+                                    wait_for_loading_overlay_to_disappear(timeout=10)  # Wait for content to load
+                                    
+                                    # Wait for new product containers to appear in DOM
+                                    try:
+                                        WebDriverWait(self.driver, 5).until(
+                                            lambda d: len(d.find_elements(By.CSS_SELECTOR, "div[class*='product'], div[class*='item'], [data-product-id], .product-card, .product-item")) > 0
+                                        )
                                     except:
-                                        # If still fails, try JavaScript click
+                                        pass  # Products might already be there
+                                    
+                                    # Additional wait for new products to fully render
+                                    time.sleep(2)
+                                    
+                                    # Scroll down a bit to trigger lazy loading if any
+                                    self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                                    time.sleep(1)
+                                    
+                                except Exception as click_error:
+                                    error_str = str(click_error).lower()
+                                    if 'click intercepted' in error_str or 'loadingoverlay' in error_str:
+                                        # Loading overlay is blocking - wait for it to disappear
+                                        self.logger.debug("Loading overlay blocking click, waiting for it to disappear...")
+                                        wait_for_loading_overlay_to_disappear(timeout=10)
+                                        # Try again after overlay disappears
+                                        try:
+                                            load_more_button.click()
+                                            clicks_this_batch += 1
+                                            consecutive_no_button = 0
+                                            self.logger.info(f"✓ Clicked 'Load more results' button after waiting for overlay (batch #{batch_number}, click #{clicks_this_batch}/{max_clicks_per_batch})")
+                                            if clicks_this_batch >= max_clicks_per_batch:
+                                                self.logger.info(f"✓ Reached click limit for batch #{batch_number} ({max_clicks_per_batch} clicks), proceeding to extract new products...")
+                                                break
+                                            time.sleep(1)
+                                            wait_for_loading_overlay_to_disappear(timeout=10)
+                                            time.sleep(2)
+                                        except:
+                                            # If still fails, try JavaScript click
+                                            try:
+                                                self.driver.execute_script("arguments[0].click();", load_more_button)
+                                                clicks_this_batch += 1
+                                                consecutive_no_button = 0
+                                                self.logger.info(f"✓ Clicked 'Load more results' button via JavaScript (batch #{batch_number}, click #{clicks_this_batch}/{max_clicks_per_batch})")
+                                                if clicks_this_batch >= max_clicks_per_batch:
+                                                    self.logger.info(f"✓ Reached click limit for batch #{batch_number} ({max_clicks_per_batch} clicks), proceeding to extract new products...")
+                                                    break
+                                                time.sleep(1)
+                                                wait_for_loading_overlay_to_disappear(timeout=10)
+                                                time.sleep(2)
+                                            except Exception as js_click_error:
+                                                self.logger.warning(f"JavaScript click also failed: {str(js_click_error)}")
+                                                consecutive_no_button += 1
+                                                if consecutive_no_button >= max_consecutive_no_button:
+                                                    self.logger.info("No more 'Load more results' button found or button not clickable")
+                                                    break
+                                    else:
+                                        self.logger.warning(f"Error clicking load more button: {str(click_error)}")
+                                        # Try JavaScript click as fallback
                                         try:
                                             self.driver.execute_script("arguments[0].click();", load_more_button)
-                                            load_more_clicked += 1
+                                            clicks_this_batch += 1
                                             consecutive_no_button = 0
-                                            self.logger.info(f"✓ Clicked 'Load more results' button via JavaScript (click #{load_more_clicked})")
+                                            self.logger.info(f"✓ Clicked 'Load more results' button via JavaScript (batch #{batch_number}, click #{clicks_this_batch}/{max_clicks_per_batch})")
+                                            if clicks_this_batch >= max_clicks_per_batch:
+                                                self.logger.info(f"✓ Reached click limit for batch #{batch_number} ({max_clicks_per_batch} clicks), proceeding to extract new products...")
+                                                break
                                             time.sleep(1)
                                             wait_for_loading_overlay_to_disappear(timeout=10)
                                             time.sleep(2)
@@ -674,125 +950,157 @@ class ScuderiaCarPartsScraper(BaseScraper):
                                             if consecutive_no_button >= max_consecutive_no_button:
                                                 self.logger.info("No more 'Load more results' button found or button not clickable")
                                                 break
-                                else:
-                                    self.logger.warning(f"Error clicking load more button: {str(click_error)}")
-                                    # Try JavaScript click as fallback
-                                    try:
-                                        self.driver.execute_script("arguments[0].click();", load_more_button)
-                                        load_more_clicked += 1
-                                        consecutive_no_button = 0
-                                        self.logger.info(f"✓ Clicked 'Load more results' button via JavaScript (click #{load_more_clicked})")
-                                        time.sleep(1)
-                                        wait_for_loading_overlay_to_disappear(timeout=10)
-                                        time.sleep(2)
-                                    except Exception as js_click_error:
-                                        self.logger.warning(f"JavaScript click also failed: {str(js_click_error)}")
-                                        consecutive_no_button += 1
-                                        if consecutive_no_button >= max_consecutive_no_button:
-                                            self.logger.info("No more 'Load more results' button found or button not clickable")
-                                            break
+                            else:
+                                # Button exists but not visible/enabled - likely all products loaded
+                                self.logger.info("'Load more results' button found but not visible/enabled - all products likely loaded")
+                                consecutive_no_button += 1
+                                if consecutive_no_button >= max_consecutive_no_button:
+                                    break
                         else:
-                            # Button exists but not visible/enabled - likely all products loaded
-                            self.logger.info("'Load more results' button found but not visible/enabled - all products likely loaded")
+                            # No button found - all products likely loaded
                             consecutive_no_button += 1
                             if consecutive_no_button >= max_consecutive_no_button:
+                                self.logger.info("No 'Load more results' button found - all products loaded")
                                 break
-                    else:
-                        # No button found - all products likely loaded
+                            else:
+                                self.logger.debug(f"Button not found (attempt {consecutive_no_button}/{max_consecutive_no_button})")
+                                time.sleep(1)  # Brief wait before checking again
+                    
+                    except Exception as e:
+                        self.logger.warning(f"Error while handling 'Load more results' button: {str(e)}")
                         consecutive_no_button += 1
                         if consecutive_no_button >= max_consecutive_no_button:
-                            self.logger.info("No 'Load more results' button found - all products loaded")
                             break
-                        else:
-                            self.logger.debug(f"Button not found (attempt {consecutive_no_button}/{max_consecutive_no_button})")
-                            time.sleep(1)  # Brief wait before checking again
+                        time.sleep(1)
+                
+                self.logger.info(f"✓ Finished clicking 'Load more results' button for batch #{batch_number} ({clicks_this_batch} clicks)")
+                
+                # Step 3: Wait for loading to complete and count new containers
+                wait_for_loading_overlay_to_disappear(timeout=5)
+                time.sleep(2)  # Brief wait for page to stabilize
+                
+                new_container_count = count_product_containers()
+                self.logger.info(f"Container count after batch #{batch_number}: {new_container_count} (was {last_container_count})")
+                
+                # Step 4: Extract product URLs from ONLY the newly loaded containers
+                if new_container_count > last_container_count:
+                    self.logger.info(f"Extracting product URLs from NEW containers (indices {last_container_count} to {new_container_count})...")
+                    new_product_urls = extract_urls_from_containers(start_index=last_container_count, end_index=new_container_count)
+                    new_product_urls = list(set(new_product_urls))  # Remove duplicates
+                    self.logger.info(f"✓ Extracted {len(new_product_urls)} unique product URLs from newly loaded containers")
                     
-                except Exception as e:
-                    self.logger.warning(f"Error while handling 'Load more results' button: {str(e)}")
-                    consecutive_no_button += 1
-                    if consecutive_no_button >= max_consecutive_no_button:
-                        break
-                    time.sleep(1)
-            
-            self.logger.info(f"✓ Finished clicking 'Load more results' button ({load_more_clicked} clicks total)")
-            self.logger.info("="*70)
-            
-            # Step 2: After all results are loaded, extract ALL product URLs from the entire page
-            self.logger.info("STEP 2: Extracting all product URLs from the entire page...")
-            self.logger.info("="*70)
-            
-            # Wait for any final loading to complete
-            wait_for_loading_overlay_to_disappear(timeout=5)
-            time.sleep(2)  # Brief wait for page to stabilize
-            
-            # Extract ALL URLs from all containers (start_index=0, end_index=None)
-            all_product_urls = extract_urls_from_containers(start_index=0)
-            product_urls = list(set(all_product_urls))  # Remove duplicates
-            
-            total_containers = count_product_containers()
-            self.logger.info(f"✓ Extracted {len(product_urls)} unique product URLs from {total_containers} containers")
-            
-            if not product_urls:
-                self.logger.warning("⚠️ No product URLs found on search page")
-                return product_urls
-            
-            # Step 3: Scrape all products
-            self.logger.info("="*70)
-            self.logger.info(f"STEP 3: Scraping {len(product_urls)} products...")
-            self.logger.info("="*70)
-            all_products = []
-            for idx, url in enumerate(product_urls, 1):
-                try:
-                    self.logger.info(f"[{idx}/{len(product_urls)}] Scraping: {url[:80]}...")
-                    product_data = self.scrape_product(url)
-                    if product_data:
-                        if isinstance(product_data, list):
-                            all_products.extend(product_data)
+                    if new_product_urls:
+                        # Step 5: Scrape the new products
+                        self.logger.info("="*70)
+                        self.logger.info(f"BATCH #{batch_number}: Scraping {len(new_product_urls)} newly loaded products...")
+                        self.logger.info("="*70)
+                        batch_products = []
+                        for idx, url in enumerate(new_product_urls, 1):
+                            try:
+                                self.logger.info(f"[Batch #{batch_number}, {idx}/{len(new_product_urls)}] Scraping: {url[:80]}...")
+                                product_data = self.scrape_product(url)
+                                if product_data:
+                                    if isinstance(product_data, list):
+                                        batch_products.extend(product_data)
+                                    else:
+                                        batch_products.append(product_data)
+                                    self.logger.info(f"✓ Successfully scraped: {product_data.get('title', 'Unknown')[:50] if isinstance(product_data, dict) else 'Multiple products'}")
+                                else:
+                                    self.logger.warning(f"⚠️ Failed to scrape product (returned None)")
+                                
+                                # Polite delay between products
+                                if idx < len(new_product_urls):
+                                    delay = random.uniform(3, 5)
+                                    time.sleep(delay)
+                            except Exception as e:
+                                self.logger.error(f"❌ Error scraping {url}: {str(e)}")
+                                continue
+                        
+                        # Step 6: Export Excel with batch products
+                        if batch_products:
+                            self.logger.info("="*70)
+                            self.logger.info(f"BATCH #{batch_number}: Exporting Excel with {len(batch_products)} products...")
+                            self.logger.info("="*70)
+                            try:
+                                processor = DataProcessor()
+                                df = processor.process_products(batch_products)
+                                df = processor.clean_data(df)
+                                
+                                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                                output_dir = "data/processed"
+                                os.makedirs(output_dir, exist_ok=True)
+                                output_file = f"{output_dir}/scuderiacarparts_batch_{batch_number}_{timestamp}.xlsx"
+                                
+                                exporter = ExcelExporter()
+                                exporter.export_to_excel(df, output_file, apply_formatting=True)
+                                self.logger.info(f"✓ Exported {len(df)} rows to {output_file}")
+                                
+                                # Add to total product URLs for return value
+                                product_urls.extend(new_product_urls)
+                            except Exception as e:
+                                self.logger.error(f"❌ Error exporting batch #{batch_number} products to Excel: {str(e)}")
+                                import traceback
+                                self.logger.debug(f"Traceback: {traceback.format_exc()}")
                         else:
-                            all_products.append(product_data)
-                        self.logger.info(f"✓ Successfully scraped: {product_data.get('title', 'Unknown')[:50] if isinstance(product_data, dict) else 'Multiple products'}")
+                            self.logger.warning(f"⚠️ No products scraped in batch #{batch_number} to export")
+                        
+                        # Update last_container_count for next batch
+                        last_container_count = new_container_count
                     else:
-                        self.logger.warning(f"⚠️ Failed to scrape product (returned None)")
-                    
-                    # Polite delay between products
-                    if idx < len(product_urls):
-                        delay = random.uniform(3, 5)
-                        time.sleep(delay)
-                except Exception as e:
-                    self.logger.error(f"❌ Error scraping {url}: {str(e)}")
-                    continue
-            
-            # Step 4: Export Excel with all products
-            if all_products:
-                self.logger.info("="*70)
-                self.logger.info(f"STEP 4: Exporting Excel with {len(all_products)} products...")
-                self.logger.info("="*70)
+                        self.logger.warning(f"⚠️ No new product URLs found in batch #{batch_number}")
+                        # Still update count to avoid infinite loop
+                        last_container_count = new_container_count
+                else:
+                    self.logger.warning(f"⚠️ No new containers loaded in batch #{batch_number} (count: {new_container_count}, was: {last_container_count})")
+                    # Check if button still exists - if not, we're done
+                    try:
+                        load_more_button = self.driver.find_element(By.ID, "load_more_results")
+                        if not load_more_button or not load_more_button.is_displayed():
+                            self.logger.info("No more 'Load more results' button available - all products loaded")
+                            break
+                    except:
+                        # Try XPath
+                        try:
+                            load_more_button = self.driver.find_element(
+                                By.XPATH, 
+                                "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'load more')] | //a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'load more')]"
+                            )
+                            if not load_more_button or not load_more_button.is_displayed():
+                                self.logger.info("No more 'Load more results' button available - all products loaded")
+                                break
+                        except:
+                            self.logger.info("No more 'Load more results' button found - all products loaded")
+                            break
+                
+                # Check if we should continue to next batch
+                # If no button found or button not clickable, stop
                 try:
-                    processor = DataProcessor()
-                    df = processor.process_products(all_products)
-                    df = processor.clean_data(df)
-                    
-                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                    output_dir = "data/processed"
-                    os.makedirs(output_dir, exist_ok=True)
-                    output_file = f"{output_dir}/scuderiacarparts_all_{timestamp}.xlsx"
-                    
-                    exporter = ExcelExporter()
-                    exporter.export_to_excel(df, output_file, apply_formatting=True)
-                    self.logger.info(f"✓ Exported {len(df)} rows to {output_file}")
-                except Exception as e:
-                    self.logger.error(f"❌ Error exporting products to Excel: {str(e)}")
-                    import traceback
-                    self.logger.debug(f"Traceback: {traceback.format_exc()}")
-            else:
-                self.logger.warning("⚠️ No products scraped to export")
+                    load_more_button = self.driver.find_element(By.ID, "load_more_results")
+                    if not load_more_button.is_displayed() or not load_more_button.is_enabled():
+                        self.logger.info("'Load more results' button not available - stopping batches")
+                        break
+                except:
+                    try:
+                        load_more_button = self.driver.find_element(
+                            By.XPATH, 
+                            "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'load more')] | //a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'load more')]"
+                        )
+                        if not load_more_button.is_displayed() or not load_more_button.is_enabled():
+                            self.logger.info("'Load more results' button not available - stopping batches")
+                            break
+                    except:
+                        self.logger.info("No 'Load more results' button found - stopping batches")
+                        break
+                
+                self.logger.info(f"✓ Batch #{batch_number} complete. Continuing to next batch...")
+                time.sleep(2)  # Brief pause between batches
             
             self.logger.info("="*70)
-            self.logger.info("SCRAPING AND EXPORT COMPLETE!")
+            self.logger.info("ALL BATCHES COMPLETE!")
             self.logger.info("="*70)
-            self.logger.info(f"✓ Processed {load_more_clicked} load button clicks")
-            self.logger.info(f"✓ Scraped {len(all_products)} products")
-            self.logger.info("✓ All products exported to Excel file")
+            self.logger.info(f"✓ Processed {batch_number} batches")
+            self.logger.info(f"✓ Collected {len(product_urls)} total product URLs")
+            self.logger.info("✓ All batches exported to separate Excel files")
             
         except Exception as e:
             self.logger.error(f"Error searching for wheels: {str(e)}")
