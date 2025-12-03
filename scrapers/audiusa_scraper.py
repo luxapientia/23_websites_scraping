@@ -21,33 +21,17 @@ class AudiUSAScraper(BaseScraper):
         
     def get_product_urls(self):
         """
-        Get all wheel product URLs from parts.audiusa.com
-        Comprehensive discovery strategy:
-        1. Search for wheels
-        2. Browse Tire and Wheel category
-        3. Browse Wheels accessories
-        4. Extract individual product URLs
+        Get all wheel product URLs from the specific search URL on parts.audiusa.com
+        Only collects URLs from: productSearch.aspx?ukey_make=5792&searchTerm=wheel&numResults=250
+        No pagination - all results are on a single page
         """
         product_urls = []
         
         try:
-            # Method 1: Search for wheels
-            self.logger.info("Method 1: Searching for wheel products...")
+            # Use the specific search URL provided
             search_urls = self._search_for_wheels()
             product_urls.extend(search_urls)
-            self.logger.info(f"Found {len(search_urls)} URLs via search")
-            
-            # Method 2: Browse Tire and Wheel category
-            self.logger.info("Method 2: Browsing Tire and Wheel category...")
-            category_urls = self._browse_tire_wheel_category()
-            product_urls.extend(category_urls)
-            self.logger.info(f"Found {len(category_urls)} URLs via category browsing")
-            
-            # Method 3: Browse Wheels accessories
-            self.logger.info("Method 3: Browsing Wheels accessories...")
-            accessory_urls = self._browse_wheels_accessories()
-            product_urls.extend(accessory_urls)
-            self.logger.info(f"Found {len(accessory_urls)} URLs via accessories")
+            self.logger.info(f"Found {len(search_urls)} URLs from search page")
             
             # Remove duplicates
             product_urls = list(set(product_urls))
@@ -114,15 +98,20 @@ class AudiUSAScraper(BaseScraper):
         return product_urls
     
     def _search_for_wheels(self):
-        """Search for wheels using site search"""
+        """
+        Search for wheels using the specific search URL
+        URL: productSearch.aspx?ukey_make=5792&searchTerm=wheel&numResults=250
+        No pagination - all results are on a single page
+        """
         product_urls = []
         
         try:
             if not self.driver:
                 self.ensure_driver()
             
-            search_url = f"{self.base_url}/productSearch.aspx?searchTerm=wheel"
-            self.logger.info(f"Searching: {search_url}")
+            # Use the specific search URL provided
+            search_url = "https://parts.audiusa.com/productSearch.aspx?ukey_make=5792&modelYear=0&ukey_model=0&ukey_trimLevel=0&ukey_driveline=0&ukey_Category=0&numResults=250&sortOrder=Relevance&ukey_tag=0&isOnSale=0&isAccessory=0&isPerformance=0&showAllModels=1&searchTerm=wheel"
+            self.logger.info(f"Loading search page: {search_url}")
             
             # Increase page load timeout for search page (to allow Cloudflare to complete)
             original_timeout = self.page_load_timeout
@@ -148,13 +137,13 @@ class AudiUSAScraper(BaseScraper):
             
             # Wait for search results to load
             try:
-                WebDriverWait(self.driver, 10).until(
+                WebDriverWait(self.driver, 15).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/p/Audi__/']"))
                 )
             except:
                 self.logger.warning("Product links not found immediately, continuing anyway...")
             
-            # Scroll to load lazy-loaded content
+            # Scroll to load lazy-loaded content (in case there's infinite scroll)
             self._scroll_to_load_content()
             
             # Get updated HTML after scrolling
@@ -183,108 +172,7 @@ class AudiUSAScraper(BaseScraper):
             
             self.logger.info(f"Found {len(product_links)} product links on search page, {len(product_urls)} unique URLs")
             
-            # Handle pagination
-            page_num = 2
-            max_pages = 500
-            consecutive_empty_pages = 0
-            max_consecutive_empty = 4
-            
-            while page_num <= max_pages:
-                try:
-                    self.logger.info(f"Loading search page {page_num}...")
-                    
-                    pagination_urls = [
-                        f"{self.base_url}/productSearch.aspx?searchTerm=wheel&page={page_num}",
-                        f"{self.base_url}/productSearch.aspx?searchTerm=wheel&p={page_num}",
-                        f"{self.base_url}/productSearch.aspx?searchTerm=wheel&pageNumber={page_num}",
-                    ]
-                    
-                    page_loaded = False
-                    pag_url_used = None
-                    
-                    for pag_url in pagination_urls:
-                        try:
-                            # Increase timeout for pagination pages
-                            original_pag_timeout = self.page_load_timeout
-                            try:
-                                self.page_load_timeout = 60
-                                self.driver.set_page_load_timeout(60)
-                                
-                                html = self.get_page(pag_url, use_selenium=True, wait_time=2)
-                                if html and len(html) > 5000:
-                                    # Check if page has product links
-                                    soup_check = BeautifulSoup(html, 'lxml')
-                                    page_links = soup_check.find_all('a', href=re.compile(r'/p/Audi__/'))
-                                    if len(page_links) > 0:
-                                        page_loaded = True
-                                        pag_url_used = pag_url
-                                        break
-                            except Exception as pag_error:
-                                error_str = str(pag_error).lower()
-                                if 'timeout' in error_str:
-                                    self.logger.debug(f"Timeout loading {pag_url}, trying next pattern...")
-                                continue
-                            finally:
-                                # Restore timeout
-                                try:
-                                    self.page_load_timeout = original_pag_timeout
-                                    self.driver.set_page_load_timeout(original_pag_timeout)
-                                except:
-                                    pass
-                        except:
-                            continue
-                    
-                    if not page_loaded:
-                        consecutive_empty_pages += 1
-                        if consecutive_empty_pages >= max_consecutive_empty:
-                            self.logger.info(f"Stopping pagination: {consecutive_empty_pages} consecutive pages failed")
-                            break
-                        page_num += 1
-                        continue
-                    
-                    # Scroll and extract products
-                    self._scroll_to_load_content()
-                    if not self.driver:
-                        self.logger.error("Driver not initialized after pagination scroll")
-                        break
-                    html = self.driver.page_source
-                    soup = BeautifulSoup(html, 'lxml')
-                    page_links = soup.find_all('a', href=re.compile(r'/p/Audi__/'))
-                    
-                    page_urls_count = 0
-                    for link in page_links:
-                        href = link.get('href', '')
-                        if href:
-                            full_url = href if href.startswith('http') else f"{self.base_url}{href}"
-                            if '?' in full_url:
-                                full_url = full_url.split('?')[0]
-                            if '#' in full_url:
-                                full_url = full_url.split('#')[0]
-                            full_url = full_url.rstrip('/')
-                            
-                            if full_url not in product_urls:
-                                product_urls.append(full_url)
-                                page_urls_count += 1
-                    
-                    self.logger.info(f"Page {page_num}: Found {len(page_links)} links, {page_urls_count} new URLs (Total: {len(product_urls)})")
-                    
-                    if page_urls_count == 0:
-                        consecutive_empty_pages += 1
-                        if consecutive_empty_pages >= max_consecutive_empty:
-                            break
-                    else:
-                        consecutive_empty_pages = 0
-                    
-                    page_num += 1
-                    time.sleep(random.uniform(2, 4))
-                    
-                except Exception as e:
-                    self.logger.error(f"Error processing page {page_num}: {str(e)}")
-                    consecutive_empty_pages += 1
-                    if consecutive_empty_pages >= max_consecutive_empty:
-                        break
-                    page_num += 1
-                    continue
+            # No pagination - all results are on a single page
             
         except Exception as e:
             self.logger.error(f"Error searching for wheels: {str(e)}")
@@ -616,6 +504,12 @@ class AudiUSAScraper(BaseScraper):
         retry_count = 0
         html = None
         
+        # Add delay before each product page request to avoid rate limiting
+        if retry_count == 0:  # Only delay on first attempt, not retries
+            delay = random.uniform(3, 6)  # 3-6 seconds between product pages
+            self.logger.debug(f"Waiting {delay:.1f}s before loading product page...")
+            time.sleep(delay)
+        
         while retry_count < max_retries:
             try:
                 if not self.check_health():
@@ -750,11 +644,119 @@ class AudiUSAScraper(BaseScraper):
                         else:
                             return None
                     
-                    # Check for error pages
+                    # Enhanced blocking detection
+                    page_content_length = len(html)
+                    page_text_lower = html.lower()
+                    
+                    # Check for blocking messages in page content
+                    blocking_keywords = [
+                        'you have been blocked',
+                        'access denied',
+                        'blocked',
+                        'forbidden',
+                        '403 forbidden',
+                        'access to this page has been denied',
+                        'your request has been blocked',
+                        'this request has been blocked',
+                        'unusual traffic',
+                        'suspicious activity',
+                    ]
+                    
+                    is_blocked_message = any(keyword in page_text_lower for keyword in blocking_keywords)
+                    
+                    # Check for critical error URLs
+                    critical_error_patterns = [
+                        'chrome-error://',
+                        'err_connection',
+                        'dns_probe',
+                        '/404',
+                        '/403',
+                        '?404',
+                        '?403',
+                        'error=404',
+                        'error=403',
+                        'status=404',
+                        'status=403',
+                    ]
+                    has_critical_error = any(pattern in current_url for pattern in critical_error_patterns)
+                    
+                    # Check if page has substantial content (indicates it's not blocked)
+                    has_substantial_content = page_content_length > 8000  # At least 8KB of content
+                    
+                    # Check for product-specific elements to verify it's a product page
+                    product_indicators = [
+                        soup.find('span', class_=re.compile(r'sku|part.*number|stock-code', re.I)),
+                        soup.find('div', class_=re.compile(r'product.*price|price.*product', re.I)),
+                        soup.find('div', class_=re.compile(r'product.*info|product.*details', re.I)),
+                        soup.find('button', class_=re.compile(r'add.*cart|buy.*now', re.I)),
+                        soup.find('span', {'itemprop': 'price'}),
+                        soup.find('span', class_=lambda x: x and 'stock-code-text' in ' '.join(x) if isinstance(x, list) else 'stock-code-text' in str(x)),
+                    ]
+                    has_product_elements = any(product_indicators)
+                    
+                    # Check if title is just domain (indicates blocking)
+                    title_lower = title_text.lower() if title_text else ''
+                    title_is_domain = title_lower in ['parts.audiusa.com', 'audiusa.com', 'audiusa', '']
+                    
+                    # Determine if page is blocked
+                    is_likely_blocked = (
+                        is_blocked_message or 
+                        (title_is_domain and not has_substantial_content and not has_product_elements)
+                    )
+                    
+                    # Don't mark as error if page has valid product content
+                    if has_critical_error and has_substantial_content and has_product_elements and title_text and len(title_text) > 3:
+                        has_critical_error = False
+                        self.logger.debug("False positive error detection avoided: valid product page")
+                    
+                    is_error_page = has_critical_error or is_likely_blocked
+                    
+                    if is_error_page:
+                        error_type = "error page" if has_critical_error else "blocked"
+                        self.logger.warning(f"⚠️ {error_type.capitalize()} detected on attempt {retry_count + 1}, title: '{title_text[:50]}', content: {page_content_length} bytes, has_product_elements: {has_product_elements}")
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            # Anti-blocking cooldown: wait significantly longer when blocked
+                            if error_type == "blocked":
+                                # Blocked = wait 30-60 seconds (progressive, increased for anti-blocking)
+                                base_wait = 30 + (retry_count * 10)  # 30s, 40s, 50s, 60s, 70s
+                                wait_time = random.uniform(base_wait, base_wait + 15)
+                                self.logger.warning(f"⚠️ BLOCKED - Extended cooldown: {wait_time:.1f} seconds before retry...")
+                                
+                                # If blocked multiple times, restart browser session
+                                if retry_count >= 2:
+                                    self.logger.info("🔄 Restarting browser session due to repeated blocking...")
+                                    try:
+                                        if self.driver:
+                                            self.driver.quit()
+                                        self.driver = None
+                                        time.sleep(random.uniform(5, 10))
+                                        self.ensure_driver()
+                                        self.logger.info("✓ Browser session restarted")
+                                    except Exception as restart_error:
+                                        self.logger.warning(f"Error restarting browser: {str(restart_error)}")
+                            else:
+                                # Error page = wait 10-15 seconds
+                                wait_time = random.uniform(10, 15)
+                                self.logger.info(f"Waiting {wait_time:.1f} seconds before retry...")
+                            
+                            time.sleep(wait_time)
+                            
+                            # If blocked multiple times, add extra human-like behavior
+                            if error_type == "blocked" and retry_count >= 2:
+                                self.logger.info("Simulating extended human behavior after blocking...")
+                                time.sleep(random.uniform(10, 20))
+                                self.simulate_human_behavior()
+                            
+                            continue
+                        else:
+                            self.logger.error(f"❌ Failed after {max_retries} attempts - {error_type}")
+                            return None
+                    
+                    # Check for error pages (fallback for empty pages)
                     if not title_text or len(title_text) < 3:
-                        page_content_length = len(html)
                         if page_content_length < 8000:
-                            self.logger.warning(f"⚠️ Page appears blocked or empty: {url}")
+                            self.logger.warning(f"⚠️ Page appears empty: {url}")
                         retry_count += 1
                         if retry_count < max_retries:
                             wait_time = random.uniform(10, 15)
@@ -1193,24 +1195,141 @@ class AudiUSAScraper(BaseScraper):
             # Also check for "What This Fits" tab content
             
             # Method 1: Extract from "What This Fits" tab (WhatThisFitsTabComponent)
+            # Structure: Each row has div.col-lg-12 with:
+            #   - div.whatThisFitsFitment.col-lg-6 > span (vehicle description: "Audi S7 2.9L V6 MILD HYBRID EV-GAS (MHEV) A/T Premium Hatchback")
+            #   - div.whatThisFitsYears.col-lg-6 > span > a (year links: "2024", "2025")
             fitment_tab = soup.find('div', id='WhatThisFitsTabComponent_TABPANEL')
             if fitment_tab:
-                # Look for fitment information in the tab
-                fitment_links = fitment_tab.find_all('a', href=re.compile(r'/p/Audi_\d+_/'))
-                for link in fitment_links:
-                    href = link.get('href', '')
-                    year_match = re.search(r'/p/Audi_(\d{4})_/', href)
-                    if year_match:
-                        year = year_match.group(1)
-                        link_text = link.get_text(strip=True)
-                        # Extract model from link text or href
-                        model = link_text if link_text else 'Audi'
+                # Find all fitment rows (div.col-lg-12 containing fitment data)
+                fitment_rows = fitment_tab.find_all('div', class_=lambda x: x and isinstance(x, list) and 'col-lg-12' in x)
+                
+                for row in fitment_rows:
+                    # Find the vehicle description span
+                    fitment_div = row.find('div', class_=lambda x: x and isinstance(x, list) and 'whatThisFitsFitment' in ' '.join(x))
+                    if not fitment_div:
+                        continue
+                    
+                    vehicle_span = fitment_div.find('span')
+                    if not vehicle_span:
+                        continue
+                    
+                    vehicle_text = vehicle_span.get_text(strip=True)
+                    if not vehicle_text:
+                        continue
+                    
+                    # Parse vehicle description: "Audi S7 2.9L V6 MILD HYBRID EV-GAS (MHEV) A/T Premium Hatchback"
+                    # Make: Always "Audi"
+                    make = 'Audi'
+                    
+                    # Extract model: "Audi S7" (first two words)
+                    words = vehicle_text.split()
+                    if len(words) >= 2:
+                        model = f"{words[0]} {words[1]}"  # "Audi S7"
+                    else:
+                        model = vehicle_text
+                    
+                    # Extract engine and trim
+                    # Pattern: Model EngineSize ... Transmission Trim
+                    # Example: "Audi S7 2.9L V6 MILD HYBRID EV-GAS (MHEV) A/T Premium Hatchback"
+                    # Engine: "2.9L V6 MILD HYBRID EV-GAS (MHEV) A/T"
+                    # Trim: "Premium Hatchback"
+                    
+                    # Find engine size pattern (e.g., "2.9L", "3.0L")
+                    engine_match = re.search(r'(\d+\.?\d*L)', vehicle_text)
+                    if engine_match:
+                        engine_start = engine_match.start()
+                        
+                        # Find transmission pattern (A/T, M/T, CVT, AUTO, MANUAL)
+                        transmission_pattern = r'\s+(A/T|M/T|CVT|AUTO|MANUAL)\s+'
+                        transmission_match = re.search(transmission_pattern, vehicle_text[engine_start:])
+                        
+                        if transmission_match:
+                            # Engine includes everything from engine size to transmission (inclusive)
+                            engine_end = engine_start + transmission_match.end()
+                            engine = vehicle_text[engine_start:engine_end].strip()
+                            # Trim is everything after transmission
+                            trim = vehicle_text[engine_end:].strip()
+                        else:
+                            # No transmission found, try to find trim by looking for common trim keywords
+                            # Common trim patterns: Premium, Prestige, Base, Sport, etc.
+                            trim_keywords = r'(Premium|Prestige|Base|Sport|S-Line|Quattro|SE|LE|Limited|Edition|Hatchback|Sedan|SUV|Coupe|Convertible|Wagon)'
+                            trim_match = re.search(r'\s+' + trim_keywords, vehicle_text[engine_start:], re.IGNORECASE)
+                            if trim_match:
+                                engine_end = engine_start + trim_match.start()
+                                engine = vehicle_text[engine_start:engine_end].strip()
+                                trim = vehicle_text[engine_end:].strip()
+                            else:
+                                # No trim pattern found, engine is from engine size to end
+                                engine = vehicle_text[engine_start:].strip()
+                                trim = ''
+                    else:
+                        # No engine size pattern found
+                        # Try to find transmission to split model/engine from trim
+                        transmission_match = re.search(r'\s+(A/T|M/T|CVT|AUTO|MANUAL)\s+', vehicle_text)
+                        if transmission_match:
+                            # Everything after transmission is trim
+                            trim = vehicle_text[transmission_match.end():].strip()
+                            # Everything before transmission might contain engine info
+                            before_transmission = vehicle_text[:transmission_match.start()].strip()
+                            # If it starts with "Audi Model", try to extract engine
+                            if before_transmission.startswith('Audi ') and len(before_transmission.split()) > 2:
+                                # Assume first two words are model, rest is engine
+                                parts = before_transmission.split(' ', 2)
+                                if len(parts) >= 3:
+                                    model = f"{parts[0]} {parts[1]}"
+                                    engine = parts[2]
+                                else:
+                                    engine = ''
+                            else:
+                                engine = ''
+                        else:
+                            # No clear structure, no engine or trim
+                            engine = ''
+                            trim = ''
+                    
+                    # Find the years div
+                    years_div = row.find('div', class_=lambda x: x and isinstance(x, list) and 'whatThisFitsYears' in ' '.join(x))
+                    if years_div:
+                        year_links = years_div.find_all('a', href=re.compile(r'/p/Audi_\d+_/'))
+                        years = []
+                        for link in year_links:
+                            href = link.get('href', '')
+                            year_match = re.search(r'/p/Audi_(\d{4})_/', href)
+                            if year_match:
+                                years.append(year_match.group(1))
+                            else:
+                                # Fallback: extract year from link text
+                                link_text = link.get_text(strip=True)
+                                if link_text and link_text.isdigit() and len(link_text) == 4:
+                                    years.append(link_text)
+                        
+                        # Create a fitment entry for each year
+                        if years:
+                            for year in years:
+                                product_data['fitments'].append({
+                                    'year': year,
+                                    'make': make,
+                                    'model': model,
+                                    'trim': trim,
+                                    'engine': engine
+                                })
+                        else:
+                            # No years found, add one entry without year
+                            product_data['fitments'].append({
+                                'year': '',
+                                'make': make,
+                                'model': model,
+                                'trim': trim,
+                                'engine': engine
+                            })
+                    else:
+                        # No years div found, add one entry without year
                         product_data['fitments'].append({
-                            'year': year,
-                            'make': 'Audi',
+                            'year': '',
+                            'make': make,
                             'model': model,
-                            'trim': '',
-                            'engine': ''
+                            'trim': trim,
+                            'engine': engine
                         })
             
             # Method 2: Extract from guided navigation year links
