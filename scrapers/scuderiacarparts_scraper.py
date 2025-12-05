@@ -775,19 +775,27 @@ class ScuderiaCarPartsScraper(BaseScraper):
                 return current_urls
             
             # INCREMENTAL WORKFLOW: 
-            # - Batch 1: Click 20 times → scrape products 221-420 → export
-            # - Batch 2+: Click 10 times each → scrape next 200 products → export
-            # Track container count to extract only NEW products each batch
-            # NOTE: First 220 products are already scraped
-            last_container_count = 220  # First 220 products already scraped
+            # - Products from clicks 1-10 are already collected
+            # - This run: Click 40 times (clicks 11-50) → scrape newly loaded products → export
+            # Track container count to extract only NEW products from clicks 11-50
+            
+            # Step 1: Count current containers (after 10 clicks have been done)
+            self.logger.info("="*70)
+            self.logger.info("COUNTING CURRENT CONTAINERS (after 10 clicks)...")
+            self.logger.info("="*70)
+            wait_for_loading_overlay_to_disappear(timeout=5)
+            time.sleep(2)  # Wait for page to stabilize
+            last_container_count = count_product_containers()
+            self.logger.info(f"✓ Current container count (after 10 clicks): {last_container_count}")
+            self.logger.info("="*70)
+            
             batch_number = 0  # Will be incremented to 1 in first iteration
-            max_batches = 100  # Safety limit for batches
+            max_batches = 1  # Only one batch for clicks 11-50
             
             self.logger.info("="*70)
-            self.logger.info("RESUMING FROM BATCH #1")
-            self.logger.info(f"Starting with {last_container_count} containers already processed")
-            self.logger.info("Batch #1: Will click 20 times to load products 221-420")
-            self.logger.info("Batch #2+: Will click 10 times each to load next 200 products")
+            self.logger.info("COLLECTING PRODUCTS FROM CLICKS 11-50")
+            self.logger.info(f"Starting with {last_container_count} containers already processed (from clicks 1-10)")
+            self.logger.info("Will click 40 times (clicks 11-50) to load new products")
             self.logger.info("="*70)
             
             # Main loop: repeat the cycle of clicking, extracting, scraping, and exporting
@@ -802,11 +810,8 @@ class ScuderiaCarPartsScraper(BaseScraper):
                 self.logger.info(f"Container count before batch #{batch_number}: {current_container_count} (last was: {last_container_count})")
             
                 # Step 2: Determine clicks for this batch
-                # Batch 1: 20 clicks, Batch 2+: 10 clicks each
-                if batch_number == 1:
-                    max_clicks_this_batch = 20
-                else:
-                    max_clicks_this_batch = 10
+                # This batch: 40 clicks (clicks 11-50)
+                max_clicks_this_batch = 40
                 
                 self.logger.info(f"Clicking 'Load more results' button {max_clicks_this_batch} times for batch #{batch_number}...")
                 clicks_this_batch = 0
@@ -1092,13 +1097,12 @@ class ScuderiaCarPartsScraper(BaseScraper):
                             self.logger.info("No more 'Load more results' button found - all products loaded")
                             break
                 
-                # Check if we should continue to next batch
-                # If no button found or button not clickable, stop
+                # Since we're only doing one batch (clicks 11-50), we don't need to check for next batch
+                # But we can check if button is still available for logging purposes
                 try:
                     load_more_button = self.driver.find_element(By.ID, "load_more_results")
                     if not load_more_button.is_displayed() or not load_more_button.is_enabled():
-                        self.logger.info("'Load more results' button not available - stopping batches")
-                        break
+                        self.logger.info("'Load more results' button not available - all products may be loaded")
                 except:
                     try:
                         load_more_button = self.driver.find_element(
@@ -1106,21 +1110,21 @@ class ScuderiaCarPartsScraper(BaseScraper):
                             "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'load more')] | //a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'load more')]"
                         )
                         if not load_more_button.is_displayed() or not load_more_button.is_enabled():
-                            self.logger.info("'Load more results' button not available - stopping batches")
-                            break
+                            self.logger.info("'Load more results' button not available - all products may be loaded")
                     except:
-                        self.logger.info("No 'Load more results' button found - stopping batches")
-                        break
+                        self.logger.info("No 'Load more results' button found - all products may be loaded")
                 
-                self.logger.info(f"✓ Batch #{batch_number} complete. Continuing to next batch...")
-                time.sleep(2)  # Brief pause between batches
+                self.logger.info(f"✓ Batch #{batch_number} complete (clicks 11-50 finished).")
+                # Break after one batch since we only need clicks 11-50
+                break
             
             self.logger.info("="*70)
-            self.logger.info("ALL BATCHES COMPLETE!")
+            self.logger.info("CLICKS 11-50 COMPLETE!")
             self.logger.info("="*70)
-            self.logger.info(f"✓ Processed {batch_number} batches")
-            self.logger.info(f"✓ Collected {len(product_urls)} total product URLs")
-            self.logger.info("✓ All batches exported to separate Excel files")
+            self.logger.info(f"✓ Processed {batch_number} batch(es)")
+            self.logger.info(f"✓ Collected {len(product_urls)} new product URLs from clicks 11-50")
+            if batch_number > 0:
+                self.logger.info("✓ Products exported to Excel file")
             
         except Exception as e:
             self.logger.error(f"Error searching for wheels: {str(e)}")
