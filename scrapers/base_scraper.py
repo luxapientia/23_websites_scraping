@@ -235,6 +235,54 @@ class BaseScraper(ABC):
         self.logger.warning("Could not detect Chrome version, will use auto-detection")
         return None
     
+    def _create_chrome_options(self):
+        """
+        Create a new ChromeOptions object with all necessary settings.
+        This must be called fresh for each retry since ChromeOptions cannot be reused.
+        """
+        # IMPORTANT: Using undetected_chromedriver (uc) instead of regular selenium.webdriver.Chrome
+        # This provides automatic anti-detection features and helps bypass Cloudflare
+        options = uc.ChromeOptions()  # uc = undetected_chromedriver
+
+        if self.headless:
+            # options.add_argument('--headless=new')  # Disabled - causes issues
+            # Move window off-screen
+            options.add_argument("--window-position=0,0")
+        
+        # Anti-detection arguments
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-software-rasterizer")
+        
+        # Use normal page load strategy (more human-like, less suspicious)
+        # Changed from 'eager' to 'normal' to avoid Cloudflare detection
+        options.page_load_strategy = 'normal'
+        
+        # Performance optimizations - made optional to avoid detection
+        # Note: Blocking images/CSS can create suspicious fingerprints
+        # Only block if really needed for speed, otherwise let them load normally
+        # options.add_argument('--blink-settings=imagesEnabled=false')  # DISABLED - suspicious
+        
+        # Preferences - minimal blocking to avoid detection
+        options.add_experimental_option("prefs", {
+            "profile.default_content_setting_values.notifications": 2,
+            "credentials_enable_service": False,
+            "profile.password_manager_enabled": False,
+            "profile.default_content_settings.popups": 0,
+            # Images and CSS blocking disabled - can trigger Cloudflare detection
+            # "profile.managed_default_content_settings.images": 2,  # DISABLED
+            # "profile.managed_default_content_settings.stylesheets": 2,  # DISABLED
+            "profile.managed_default_content_settings.plugins": 2,  # Block plugins (safe)
+            "profile.managed_default_content_settings.media_stream": 2,  # Block media (safe)
+        })
+        
+        # Note: excludeSwitches and useAutomationExtension are handled automatically by undetected_chromedriver
+        # Don't set them manually as they cause compatibility issues
+        
+        return options
+    
     def setup_selenium(self):
         """
         Setup undetected ChromeDriver with maximum anti-detection measures - improved initialization
@@ -251,47 +299,6 @@ class BaseScraper(ABC):
             # Detect Chrome version to ensure ChromeDriver compatibility
             chrome_version = self._detect_chrome_version()
             
-            # IMPORTANT: Using undetected_chromedriver (uc) instead of regular selenium.webdriver.Chrome
-            # This provides automatic anti-detection features and helps bypass Cloudflare
-            options = uc.ChromeOptions()  # uc = undetected_chromedriver
-
-            if self.headless:
-                # options.add_argument('--headless=new')  # Disabled - causes issues
-                # Move window off-screen
-                options.add_argument("--window-position=0,0")
-            
-            # Anti-detection arguments
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("--disable-blink-features=AutomationControlled")
-            options.add_argument("--disable-gpu")
-            options.add_argument("--disable-software-rasterizer")
-            
-            # Use normal page load strategy (more human-like, less suspicious)
-            # Changed from 'eager' to 'normal' to avoid Cloudflare detection
-            options.page_load_strategy = 'normal'
-            
-            # Performance optimizations - made optional to avoid detection
-            # Note: Blocking images/CSS can create suspicious fingerprints
-            # Only block if really needed for speed, otherwise let them load normally
-            # options.add_argument('--blink-settings=imagesEnabled=false')  # DISABLED - suspicious
-            
-            # Preferences - minimal blocking to avoid detection
-            options.add_experimental_option("prefs", {
-                "profile.default_content_setting_values.notifications": 2,
-                "credentials_enable_service": False,
-                "profile.password_manager_enabled": False,
-                "profile.default_content_settings.popups": 0,
-                # Images and CSS blocking disabled - can trigger Cloudflare detection
-                # "profile.managed_default_content_settings.images": 2,  # DISABLED
-                # "profile.managed_default_content_settings.stylesheets": 2,  # DISABLED
-                "profile.managed_default_content_settings.plugins": 2,  # Block plugins (safe)
-                "profile.managed_default_content_settings.media_stream": 2,  # Block media (safe)
-            })
-            
-            # Note: excludeSwitches and useAutomationExtension are handled automatically by undetected_chromedriver
-            # Don't set them manually as they cause compatibility issues
-            
             # Try to use local ChromeDriver first to avoid network timeout
             chromedriver_path = os.path.join(os.getcwd(), 'chromedriver-win32', 'chromedriver.exe')
             driver_executable_path = chromedriver_path if os.path.exists(chromedriver_path) else None
@@ -305,6 +312,10 @@ class BaseScraper(ABC):
             
             while retry_count < max_retries and not driver_initialized:
                 try:
+                    # Create fresh ChromeOptions for each retry attempt
+                    # ChromeOptions cannot be reused, so we must create a new one each time
+                    options = self._create_chrome_options()
+                    
                     if driver_executable_path and os.path.exists(driver_executable_path):
                         # Use local ChromeDriver to avoid network timeout
                         self.logger.info(f"Using local ChromeDriver with undetected_chromedriver: {driver_executable_path}")
@@ -413,18 +424,43 @@ class BaseScraper(ABC):
                             self.logger.error("You can also delete the local ChromeDriver to force auto-download of correct version")
                             raise
                     
-                    # Check if it's a network/timeout error
-                    elif any(keyword in error_msg for keyword in ['timeout', 'connection', 'failed', 'urlopen', '10060']):
+                    # Check if it's a network/timeout error or window closure error
+                    elif any(keyword in error_msg for keyword in ['timeout', 'connection', 'failed', 'urlopen', '10060', 'no such window', 'target window already closed', 'web view not found']):
                         retry_count += 1
-                        if driver_executable_path and os.path.exists(driver_executable_path) and retry_count < max_retries:
-                            self.logger.warning(f"Network error during initialization (attempt {retry_count}/{max_retries}): {str(e)}")
-                            self.logger.info("Retrying with local ChromeDriver...")
+                        if retry_count < max_retries:
+                            self.logger.warning(f"Network/window error during initialization (attempt {retry_count}/{max_retries}): {str(e)}")
+                            # Clean up any partial driver instance
+                            try:
+                                if self.driver:
+                                    self.driver.quit()
+                                    self.driver = None
+                            except:
+                                pass
+                            self.logger.info("Retrying with fresh ChromeOptions...")
                             time.sleep(2)  # Brief wait before retry
                             continue
                         else:
                             self.logger.error(f"Failed to initialize ChromeDriver after {retry_count} attempts: {str(e)}")
                             if not driver_executable_path or not os.path.exists(driver_executable_path):
                                 self.logger.error("No local ChromeDriver found. Please ensure chromedriver-win32/chromedriver.exe exists.")
+                            raise
+                    # Check if it's the ChromeOptions reuse error
+                    elif 'cannot reuse' in error_msg and 'chromeoptions' in error_msg:
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            self.logger.warning(f"ChromeOptions reuse error (attempt {retry_count}/{max_retries}): {str(e)}")
+                            # Clean up any partial driver instance
+                            try:
+                                if self.driver:
+                                    self.driver.quit()
+                                    self.driver = None
+                            except:
+                                pass
+                            self.logger.info("Retrying with fresh ChromeOptions...")
+                            time.sleep(2)  # Brief wait before retry
+                            continue
+                        else:
+                            self.logger.error(f"Failed to initialize ChromeDriver after {retry_count} attempts: {str(e)}")
                             raise
                     else:
                         # Other errors - raise immediately
