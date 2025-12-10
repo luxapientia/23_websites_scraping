@@ -24,16 +24,12 @@ class JaguarScraper(BaseScraper):
         product_urls = []
         
         try:
-            self.logger.info("Searching for wheel products...")
+            self.logger.info("Extracting wheel products from search page...")
             search_urls = self._search_for_wheels()
             product_urls.extend(search_urls)
             
-            self.logger.info("Browsing Tire and Wheel category...")
-            category_urls = self._browse_tire_wheel_category()
-            product_urls.extend(category_urls)
-            
             product_urls = list(set(product_urls))
-            self.logger.info(f"Total unique URLs found: {len(product_urls)}")
+            self.logger.info(f"Found {len(product_urls)} unique wheel product URLs")
             
             # Filter out category/listing pages - only keep individual product pages
             validated_urls = []
@@ -57,15 +53,19 @@ class JaguarScraper(BaseScraper):
         return product_urls
     
     def _search_for_wheels(self):
-        """Search for wheels using site search"""
+        """
+        Visit the wheel search page and extract all product URLs
+        URL: https://parts.jaguarpalmbeach.com/productSearch.aspx?ukey_make=5796&modelYear=0&ukey_model=0&ukey_trimLevel=0&ukey_driveline=0&ukey_Category=0&numResults=250&sortOrder=Relevance&ukey_tag=0&isOnSale=0&isAccessory=0&isPerformance=0&showAllModels=1&searchTerm=wheel
+        """
         product_urls = []
         
         try:
             if not self.driver:
                 self.ensure_driver()
             
-            search_url = f"{self.base_url}/productSearch.aspx?searchTerm=wheel"
-            self.logger.info(f"Searching: {search_url}")
+            # The search URL with 250 results
+            search_url = f"{self.base_url}/productSearch.aspx?ukey_make=5796&modelYear=0&ukey_model=0&ukey_trimLevel=0&ukey_driveline=0&ukey_Category=0&numResults=250&sortOrder=Relevance&ukey_tag=0&isOnSale=0&isAccessory=0&isPerformance=0&showAllModels=1&searchTerm=wheel"
+            self.logger.info(f"Visiting search page: {search_url}")
             
             original_timeout = self.page_load_timeout
             try:
@@ -73,6 +73,7 @@ class JaguarScraper(BaseScraper):
                 self.driver.set_page_load_timeout(60)
                 html = self.get_page(search_url, use_selenium=True, wait_time=2)
                 if not html:
+                    self.logger.warning("Failed to fetch search page")
                     return product_urls
             except Exception as e:
                 self.logger.error(f"Error loading search page: {str(e)}")
@@ -84,35 +85,64 @@ class JaguarScraper(BaseScraper):
                 except:
                     pass
             
+            # Wait for product links to appear
             try:
-                WebDriverWait(self.driver, 10).until(
+                WebDriverWait(self.driver, 15).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/p/Jaguar__/']"))
                 )
             except:
-                pass
+                self.logger.warning("Product links not found immediately, continuing anyway...")
             
+            # Scroll to load all products (lazy loading)
             self._scroll_to_load_content()
+            
+            # Get updated HTML after scrolling
             html = self.driver.page_source
             soup = BeautifulSoup(html, 'lxml')
             
-            product_links = soup.find_all('a', href=re.compile(r'/p/Jaguar__/'))
+            # Extract all product links matching the pattern /p/Jaguar__/Product-Name/ID/PartNumber.html
+            product_links = soup.find_all('a', href=re.compile(r'/p/Jaguar__/[^/]+/\d+/[^/]+\.html', re.I))
+            
+            self.logger.info(f"Found {len(product_links)} product links on page")
             
             for link in product_links:
                 href = link.get('href', '')
                 if href:
+                    # Convert relative URLs to absolute
                     full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                    
+                    # Remove query parameters and fragments
                     if '?' in full_url:
                         full_url = full_url.split('?')[0]
                     if '#' in full_url:
                         full_url = full_url.split('#')[0]
+                    
                     full_url = full_url.rstrip('/')
-                    if full_url not in product_urls:
-                        product_urls.append(full_url)
+                    
+                    # Only collect individual product pages (pattern: /p/Jaguar__/Product-Name/ID/PartNumber.html)
+                    if re.search(r'/p/Jaguar__/[^/]+/\d+/[^/]+\.html$', full_url, re.I):
+                        if full_url not in product_urls:
+                            product_urls.append(full_url)
             
-            self.logger.info(f"Found {len(product_links)} product links, {len(product_urls)} unique URLs")
+            self.logger.info(f"Extracted {len(product_urls)} unique product URLs from search page")
+            
+            # Check for pagination - if there are more than 250 results, we might need to handle pagination
+            # But the URL specifies numResults=250, so all results should be on one page
+            # However, let's check if there's a "Next" or pagination indicator
+            pagination_found = False
+            try:
+                # Look for pagination indicators
+                pagination_elements = soup.find_all(['a', 'span'], string=re.compile(r'next|more|page\s*\d+', re.I))
+                if pagination_elements:
+                    pagination_found = True
+                    self.logger.info("Pagination detected, but URL specifies 250 results - all should be on one page")
+            except:
+                pass
             
         except Exception as e:
             self.logger.error(f"Error searching for wheels: {str(e)}")
+            import traceback
+            self.logger.debug(f"Traceback: {traceback.format_exc()}")
         
         return product_urls
     

@@ -1389,7 +1389,8 @@ class BaseScraper(ABC):
             'wheel rim',  # Ensure lowercase version
             'rims',  # Plural form
             'wheels',  # Plural form,
-            'Rear'
+            'Rear',
+            'Wheel Hub Cap'
                        
     ]
     
@@ -1460,27 +1461,59 @@ class BaseScraper(ABC):
         self.logger.info(f"🔍 Analyzing: '{title}'")
         self.logger.info(f"   Lowercased text: '{text}'")
         
-        # Check exclusions first
-        for exclude in exclude_keywords:
-            if exclude in text:
-                self.logger.info(f"❌ EXCLUDED '{title[:50]}' - matched '{exclude}'")
-                return False
+        # Sort keywords by length (longest first) to check more specific matches first
+        sorted_wheel_keywords = sorted(wheel_keywords, key=lambda k: (-len(k), k))
+        sorted_exclude_keywords = sorted(exclude_keywords, key=lambda k: (-len(k), k))
         
-        # Check if it's a wheel product
-        for keyword in wheel_keywords:
-            # For single-word keywords like 'rim', match as whole word
-            # For multi-word keywords like 'wheel cap', use substring match
+        # Find all matching keywords from both lists, keeping track of the longest match
+        longest_wheel_match = None
+        longest_exclude_match = None
+        longest_wheel_length = 0
+        longest_exclude_length = 0
+        
+        # Check all wheel keywords and find the longest match
+        for keyword in sorted_wheel_keywords:
+            keyword_lower = keyword.lower()
+            matched = False
             if len(keyword.split()) == 1:
                 # Single word: match as whole word using word boundaries
-                pattern = r'\b' + re.escape(keyword) + r'\b'
+                pattern = r'\b' + re.escape(keyword_lower) + r'\b'
                 if re.search(pattern, text):
-                    self.logger.info(f"✅ INCLUDED '{title[:50]}' - matched '{keyword}'")
-                    return True
+                    matched = True
             else:
-                # Multi-word: use substring match (already safe)
-                if keyword in text:
-                    self.logger.info(f"✅ INCLUDED '{title[:50]}' - matched '{keyword}'")
-                    return True
+                # Multi-word: use substring match
+                if keyword_lower in text:
+                    matched = True
+            
+            if matched and len(keyword) > longest_wheel_length:
+                longest_wheel_match = keyword
+                longest_wheel_length = len(keyword)
+        
+        # Check all exclude keywords and find the longest match
+        for exclude in sorted_exclude_keywords:
+            exclude_lower = exclude.lower()
+            if exclude_lower in text and len(exclude) > longest_exclude_length:
+                longest_exclude_match = exclude
+                longest_exclude_length = len(exclude)
+        
+        # If both match, the longer/more specific one wins
+        # If only one matches, use that result
+        if longest_wheel_length > 0 and longest_exclude_length > 0:
+            # Both matched - longer one wins
+            if longest_wheel_length >= longest_exclude_length:
+                self.logger.info(f"✅ INCLUDED '{title[:50]}' - matched '{longest_wheel_match}' (overrides '{longest_exclude_match}')")
+                return True
+            else:
+                self.logger.info(f"❌ EXCLUDED '{title[:50]}' - matched '{longest_exclude_match}' (overrides '{longest_wheel_match}')")
+                return False
+        elif longest_wheel_length > 0:
+            # Only wheel keyword matched
+            self.logger.info(f"✅ INCLUDED '{title[:50]}' - matched '{longest_wheel_match}'")
+            return True
+        elif longest_exclude_length > 0:
+            # Only exclude keyword matched
+            self.logger.info(f"❌ EXCLUDED '{title[:50]}' - matched '{longest_exclude_match}'")
+            return False
         
         self.logger.info(f"⚠️ NO MATCH '{title[:50]}' - no wheel keywords found")
         return False
