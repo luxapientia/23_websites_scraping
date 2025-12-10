@@ -831,27 +831,31 @@ class InfinitiScraper(BaseScraper):
                                                 else:
                                                     row_data['trim'] = trim_engine_text
                             
-                            # Expand year ranges into individual fitment records
+                            # Expand year ranges and split comma-separated trim/engine values
                             if row_data['year'] or row_data['model']:
                                 year_value = row_data.get('year', '')
                                 expanded_years = self._expand_year_range(year_value)
                                 
-                                if len(expanded_years) > 1:
-                                    # Create separate fitment record for each year
-                                    for year in expanded_years:
-                                        fitment_record = {
-                                            'year': year,
-                                            'make': row_data.get('make', 'Infiniti'),
-                                            'model': row_data.get('model', ''),
-                                            'trim': row_data.get('trim', ''),
-                                            'engine': row_data.get('engine', '')
-                                        }
-                                        product_data['fitments'].append(fitment_record)
-                                else:
-                                    # Single year or no year range, add as-is
-                                    if expanded_years:
-                                        row_data['year'] = expanded_years[0]
-                                    product_data['fitments'].append(row_data)
+                                # Split comma-separated trim values
+                                trim_value = row_data.get('trim', '')
+                                trim_list = [t.strip() for t in trim_value.split(',') if t.strip()] if trim_value else ['']
+                                
+                                # Split comma-separated engine values
+                                engine_value = row_data.get('engine', '')
+                                engine_list = [e.strip() for e in engine_value.split(',') if e.strip()] if engine_value else ['']
+                                
+                                # Generate all combinations: years × trims × engines
+                                for year in expanded_years:
+                                    for trim in trim_list:
+                                        for engine in engine_list:
+                                            fitment_record = {
+                                                'year': year,
+                                                'make': row_data.get('make', 'Infiniti'),
+                                                'model': row_data.get('model', ''),
+                                                'trim': trim,
+                                                'engine': engine
+                                            }
+                                            product_data['fitments'].append(fitment_record)
             
             # Fallback: If no fitments found, add empty entry
             if not product_data['fitments']:

@@ -1398,6 +1398,7 @@ class BaseScraper(ABC):
     EXCLUDE_KEYWORDS = [
             'steering wheel',
             'Wheel Flange',
+            'Wheel Flare',
             'wheel bearing',
             'Wheel Spacer',
             'bearing hub',
