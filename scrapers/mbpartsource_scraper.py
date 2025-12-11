@@ -1,4 +1,4 @@
-"""Scraper for www.mitsubishipartswarehouse.com (Mitsubishi parts) - Auto Parts Prime platform"""
+"""Scraper for www.mbpartsource.com (Mercedes-Benz parts)"""
 from scrapers.base_scraper import BaseScraper
 from bs4 import BeautifulSoup
 import json
@@ -12,40 +12,23 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
-class MitsubishiScraper(BaseScraper):
-    """Scraper for www.mitsubishipartswarehouse.com - Uses Auto Parts Prime platform"""
+class MercedesScraper(BaseScraper):
+    """Scraper for www.mbpartsource.com"""
     
     def __init__(self):
-        super().__init__('mitsubishi', use_selenium=True)
-        self.base_url = 'https://www.mitsubishipartswarehouse.com'
+        super().__init__('mercedes', use_selenium=True)
+        self.base_url = 'https://www.mbpartsource.com'
         
     def get_product_urls(self):
-        """Get all wheel product URLs from www.mitsubishipartswarehouse.com"""
+        """Get all wheel product URLs from www.mbpartsource.com"""
         product_urls = []
         
         try:
             self.logger.info("Searching for wheel products...")
             search_urls = self._search_for_wheels()
             product_urls.extend(search_urls)
-            
-            self.logger.info("Browsing wheels accessories...")
-            accessory_urls = self._browse_wheels_accessories()
-            product_urls.extend(accessory_urls)
-            
             product_urls = list(set(product_urls))
-            self.logger.info(f"Total unique URLs found: {len(product_urls)}")
-            
-            # Filter out category/listing pages - only keep individual product pages
-            # Product URLs: /oem-parts/mitsubishi-{name}-{part}
-            validated_urls = []
-            for url in product_urls:
-                # RevolutionParts platform: /oem-parts/mitsubishi-wheel-alloy-4250a689
-                if '/oem-parts/mitsubishi-' in url:
-                    if not any(pattern in url for pattern in ['/accessories/', '/category/', '/search']):
-                        validated_urls.append(url)
-            
-            product_urls = validated_urls
-            self.logger.info(f"Final validated product URLs: {len(product_urls)}")
+            self.logger.info(f"Found {len(product_urls)} unique wheel product URLs")
             
         except Exception as e:
             self.logger.error(f"Error getting product URLs: {str(e)}")
@@ -186,7 +169,7 @@ class MitsubishiScraper(BaseScraper):
         page_count = 0
         
         # RevolutionParts structure: product links in div.catalog-product.row
-        # Links can be: a.title-link or a.product-image-link with href="/oem-parts/mitsubishi-..."
+        # Links can be: a.title-link or a.product-image-link with href="/oem-parts/mercedes-benz-..."
         product_rows = soup.find_all('div', class_='catalog-product')
         
         for row in product_rows:
@@ -234,50 +217,6 @@ class MitsubishiScraper(BaseScraper):
         
         return page_count
     
-    def _browse_wheels_accessories(self):
-        """Browse wheels accessories page"""
-        product_urls = []
-        
-        try:
-            accessory_url = f"{self.base_url}/accessories/mitsubishi-wheels.html"
-            original_timeout = self.page_load_timeout
-            try:
-                self.page_load_timeout = 60
-                self.driver.set_page_load_timeout(60)
-                html = self.get_page(accessory_url, use_selenium=True, wait_time=2)
-                if not html:
-                    return product_urls
-            except Exception as e:
-                return product_urls
-            finally:
-                try:
-                    self.page_load_timeout = original_timeout
-                    self.driver.set_page_load_timeout(original_timeout)
-                except:
-                    pass
-            
-            self._scroll_to_load_content()
-            html = self.driver.page_source
-            soup = BeautifulSoup(html, 'lxml')
-            
-            product_links = soup.find_all('a', href=re.compile(r'/genuine/mitsubishi-.*~.*\.html'))
-            for link in product_links:
-                href = link.get('href', '')
-                if href:
-                    full_url = href if href.startswith('http') else f"{self.base_url}{href}"
-                    if '?' in full_url:
-                        full_url = full_url.split('?')[0]
-                    if '#' in full_url:
-                        full_url = full_url.split('#')[0]
-                    full_url = full_url.rstrip('/')
-                    if full_url not in product_urls:
-                        product_urls.append(full_url)
-            
-        except Exception as e:
-            self.logger.error(f"Error browsing accessories: {str(e)}")
-        
-        return product_urls
-    
     def _scroll_to_load_content(self):
         """Scroll page to load lazy-loaded content"""
         try:
@@ -305,7 +244,7 @@ class MitsubishiScraper(BaseScraper):
             pass
     
     def scrape_product(self, url):
-        """Scrape single product from www.mitsubishipartswarehouse.com"""
+        """Scrape single product from www.mbpartsource.com"""
         max_retries = 5
         retry_count = 0
         html = None
@@ -439,7 +378,7 @@ class MitsubishiScraper(BaseScraper):
         }
         
         try:
-            # Extract title - Mitsubishi Parts Warehouse: h1.product-title
+            # Extract title - MB Part Source: h1.product-title
             title_elem = soup.find('h1', class_='product-title')
             if title_elem:
                 product_data['title'] = title_elem.get_text(strip=True)
@@ -467,7 +406,7 @@ class MitsubishiScraper(BaseScraper):
             
             self.logger.info(f"📝 Found title: {self.safe_str(product_data['title'][:60])}")
             
-            # Extract SKU/Part Number - Mitsubishi Parts Warehouse
+            # Extract SKU/Part Number - MB Part Source
             # Priority 1: Extract from JSON data (sku_stripped)
             product_data_script = soup.find('script', id='product_data', type='application/json')
             if product_data_script:
@@ -509,9 +448,9 @@ class MitsubishiScraper(BaseScraper):
                         else:
                             product_data['sku'] = product_data['pn']
             
-            # Priority 4: Extract from URL pattern: /oem-parts/mitsubishi-wheel-alloy-{sku_stripped}
+            # Priority 4: Extract from URL pattern: /oem-parts/mercedes-benz-wheel-{sku_stripped}
             if not product_data['pn']:
-                url_match = re.search(r'/oem-parts/mitsubishi-[^/]+-([a-z0-9]+)(?:-|$|\?)', url, re.I)
+                url_match = re.search(r'/oem-parts/mercedes-benz-[^/]+-([a-z0-9]+)(?:-|$|\?)', url, re.I)
                 if url_match:
                     product_data['pn'] = url_match.group(1).upper()
                     if not product_data['sku']:
@@ -529,7 +468,7 @@ class MitsubishiScraper(BaseScraper):
             except:
                 return None
             
-            # Extract price - Mitsubishi Parts Warehouse: strong#product_price or strong.sale-price-value
+            # Extract price - MB Part Source: strong#product_price or strong.sale-price-value
             price_elem = soup.find('strong', id='product_price')
             if not price_elem:
                 price_elem = soup.find('strong', class_='sale-price-value')
@@ -539,7 +478,8 @@ class MitsubishiScraper(BaseScraper):
                 price_text = price_elem.get_text(strip=True)
                 product_data['actual_price'] = self.extract_price(price_text)
             
-            # Extract MSRP - Mitsubishi Parts Warehouse: span#product_price2 or span.list-price-value
+            # Extract MSRP - MB Part Source: span#product_price2 or span.list-price-value
+            # Note: User says MSRP doesn't exist, but we'll try to extract it as fallback
             msrp_elem = soup.find('span', id='product_price2')
             if not msrp_elem:
                 msrp_elem = soup.find('span', class_='list-price-value')
@@ -564,7 +504,7 @@ class MitsubishiScraper(BaseScraper):
                     if msrp_attr:
                         product_data['msrp'] = self.extract_price(msrp_attr)
             
-            # Extract image - Mitsubishi Parts Warehouse: img.product-main-image
+            # Extract image - MB Part Source: img.product-main-image
             img_elem = soup.find('img', class_='product-main-image')
             if img_elem:
                 img_url = img_elem.get('src') or img_elem.get('data-src')
@@ -591,9 +531,9 @@ class MitsubishiScraper(BaseScraper):
                             else:
                                 product_data['image_url'] = img_url
             
-            # Fallback: Try any image with cdn-product-images or cdn-illustrations
+            # Fallback: Try any image with cdn-product-images
             if not product_data['image_url']:
-                img_elem = soup.find('img', src=re.compile(r'cdn-(product-images|illustrations)', re.I))
+                img_elem = soup.find('img', src=re.compile(r'cdn-product-images', re.I))
                 if img_elem:
                     img_url = img_elem.get('src') or img_elem.get('data-src')
                     if img_url:
@@ -604,7 +544,7 @@ class MitsubishiScraper(BaseScraper):
                         else:
                             product_data['image_url'] = img_url
             
-            # Extract description - Mitsubishi Parts Warehouse: li.description > span.description_body > p
+            # Extract description - MB Part Source: li.description > span.description_body > p
             desc_elem = soup.find('li', class_='description')
             if desc_elem:
                 desc_body = desc_elem.find('span', class_='description_body')
@@ -628,7 +568,7 @@ class MitsubishiScraper(BaseScraper):
                 except:
                     pass
             
-            # Extract "Also Known As" - Mitsubishi Parts Warehouse: li.also_known_as > h2.list-value
+            # Extract "Also Known As" - MB Part Source: li.also_known_as > h2.list-value
             also_known_elem = soup.find('li', class_='also_known_as')
             if also_known_elem:
                 also_known_value = also_known_elem.find('h2', class_='list-value')
@@ -648,7 +588,7 @@ class MitsubishiScraper(BaseScraper):
                 except:
                     pass
             
-            # Extract "Replaces" - Mitsubishi Parts Warehouse: li.product-superseded-list > h2.list-value
+            # Extract "Replaces" - MB Part Source: li.product-superseded-list > h2.list-value
             replaces_elem = soup.find('li', class_='product-superseded-list')
             if replaces_elem:
                 replaces_value = replaces_elem.find('h2', class_='list-value')
@@ -659,7 +599,7 @@ class MitsubishiScraper(BaseScraper):
                     if replaces_text:
                         product_data['replaces'] = replaces_text
             
-            # Extract fitment data - Mitsubishi Parts Warehouse: Try JSON data first, then HTML table
+            # Extract fitment data - MB Part Source: Try JSON data first, then HTML table
             # Method 1: Extract from JSON data in script tag
             if product_data_script:
                 try:
@@ -708,62 +648,53 @@ class MitsubishiScraper(BaseScraper):
                         rows = tbody.find_all('tr', class_='fitment-row')
                         for row in rows:
                             try:
-                                # Try class-based selectors first (more reliable)
                                 year_cell = row.find('td', class_='fitment-year')
                                 make_cell = row.find('td', class_='fitment-make')
                                 model_cell = row.find('td', class_='fitment-model')
                                 trim_cell = row.find('td', class_='fitment-trim')
                                 engine_cell = row.find('td', class_='fitment-engine')
                                 
-                                if year_cell and make_cell and model_cell:
-                                    year = year_cell.get_text(strip=True)
-                                    make = make_cell.get_text(strip=True)
-                                    model = model_cell.get_text(strip=True)
-                                    trim_text = trim_cell.get_text(strip=True) if trim_cell else ''
-                                    engine_text = engine_cell.get_text(strip=True) if engine_cell else ''
-                                    
-                                    # Split trim values by comma (e.g., "Evolution GSR, Evolution MR")
-                                    trims = [t.strip() for t in trim_text.split(',')] if trim_text else ['']
-                                    # Split engine values by comma if multiple engines exist
-                                    engines = [e.strip() for e in engine_text.split(',')] if engine_text else ['']
-                                    
-                                    # Generate all combinations: trim × engine
-                                    for trim_val in trims:
-                                        for engine_val in engines:
-                                            product_data['fitments'].append({
-                                                'year': year,
-                                                'make': make,
-                                                'model': model,
-                                                'trim': trim_val,
-                                                'engine': engine_val
-                                            })
-                                else:
-                                    # Fallback to index-based if class-based fails
-                                    cells = row.find_all('td')
-                                    if len(cells) >= 5:
-                                        year = cells[0].get_text(strip=True)
-                                        make = cells[1].get_text(strip=True)
-                                        model = cells[2].get_text(strip=True)
-                                        trim_text = cells[3].get_text(strip=True)
-                                        engine_text = cells[4].get_text(strip=True)
-                                        
-                                        # Split trim values by comma
-                                        trims = [t.strip() for t in trim_text.split(',')] if trim_text else ['']
-                                        # Split engine values by comma
-                                        engines = [e.strip() for e in engine_text.split(',')] if engine_text else ['']
-                                        
-                                        # Generate all combinations: trim × engine
-                                        for trim_val in trims:
-                                            for engine_val in engines:
-                                                product_data['fitments'].append({
-                                                    'year': year,
-                                                    'make': make,
-                                                    'model': model,
-                                                    'trim': trim_val,
-                                                    'engine': engine_val
-                                                })
+                                year = year_cell.get_text(strip=True) if year_cell else ''
+                                make = make_cell.get_text(strip=True) if make_cell else ''
+                                model = model_cell.get_text(strip=True) if model_cell else ''
+                                trim = trim_cell.get_text(strip=True) if trim_cell else ''
+                                engine = engine_cell.get_text(strip=True) if engine_cell else ''
+                                
+                                if year or make or model:
+                                    product_data['fitments'].append({
+                                        'year': year,
+                                        'make': make,
+                                        'model': model,
+                                        'trim': trim,
+                                        'engine': engine
+                                    })
                             except:
                                 continue
+            
+            # Method 3: Fallback - Extract from HTML fitment summary (old structure)
+            if not product_data['fitments']:
+                fitment_summary = soup.find('div', class_='catalog-product-fitment-summary')
+                if fitment_summary:
+                    fitment_list = fitment_summary.find('ul', class_='catalog-fitment-summary')
+                    if fitment_list:
+                        make_items = fitment_list.find_all('li', class_='fitment-makes')
+                        for make_item in make_items:
+                            make_elem = make_item.find('strong', class_='fitment-make')
+                            make = make_elem.get_text(strip=True).rstrip(':') if make_elem else 'Mercedes-Benz'
+                            
+                            model_list = make_item.find('ul', class_='fitment-models')
+                            if model_list:
+                                model_items = model_list.find_all('li', class_='fitment-model')
+                                for model_item in model_items:
+                                    model_text = model_item.get_text(strip=True).rstrip(',')
+                                    if model_text:
+                                        product_data['fitments'].append({
+                                            'year': '',
+                                            'make': make,
+                                            'model': model_text,
+                                            'trim': '',
+                                            'engine': ''
+                                        })
             
             if not product_data['fitments']:
                 product_data['fitments'].append({

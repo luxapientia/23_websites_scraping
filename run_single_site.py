@@ -19,7 +19,7 @@ from scrapers.kia_scraper import KiaScraper
 from scrapers.landrover_scraper import LandRoverScraper
 from scrapers.lexus_scraper import LexusScraper
 from scrapers.mazda_scraper import MazdaScraper
-from scrapers.mercedes_scraper import MercedesScraper
+from scrapers.mbpartsource_scraper import MercedesScraper
 from scrapers.mitsubishi_scraper import MitsubishiScraper
 from scrapers.moparonlineparts_scraper import MoparOnlinePartsScraper
 from scrapers.nissan_scraper import NissanScraper

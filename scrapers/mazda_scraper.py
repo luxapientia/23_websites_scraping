@@ -57,13 +57,14 @@ class MazdaScraper(BaseScraper):
         return product_urls
     
     def _search_for_wheels(self):
-        """Search for wheels using site search"""
+        """Search for wheels using site search with pagination"""
         product_urls = []
         
         try:
             if not self.driver:
                 self.ensure_driver()
             
+            # Initial search URL
             search_url = f"{self.base_url}/productSearch.aspx?searchTerm=wheel"
             self.logger.info(f"Searching: {search_url}")
             
@@ -84,44 +85,165 @@ class MazdaScraper(BaseScraper):
                 except:
                     pass
             
+            # Wait for product links to appear
             try:
                 WebDriverWait(self.driver, 10).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/p/Mazda__/']"))
                 )
             except:
-                pass
+                self.logger.warning("Product links not found immediately, continuing anyway...")
             
+            # Scroll to load all products on the first page
             self._scroll_to_load_content()
             html = self.driver.page_source
             soup = BeautifulSoup(html, 'lxml')
             
-            product_links = soup.find_all('a', href=re.compile(r'/p/Mazda__/'))
+            # Extract total number of pages from pagination
+            total_pages = 1
+            try:
+                # Look for pagination links - SimplePart typically uses pagination controls
+                pagination_links = soup.find_all('a', href=re.compile(r'productSearch\.aspx.*page|Page', re.I))
+                max_page = 1
+                
+                for link in pagination_links:
+                    href = link.get('href', '')
+                    # Extract page number from URL or text
+                    page_match = re.search(r'[Pp]age[=:]?(\d+)', href + ' ' + link.get_text(strip=True), re.I)
+                    if page_match:
+                        page_num = int(page_match.group(1))
+                        if page_num > max_page:
+                            max_page = page_num
+                    
+                    # Also check link text for page numbers
+                    link_text = link.get_text(strip=True)
+                    if link_text.isdigit():
+                        page_num = int(link_text)
+                        if page_num > max_page:
+                            max_page = page_num
+                
+                # Check for "Next" or "Last" links which might indicate more pages
+                next_links = soup.find_all('a', string=re.compile(r'next|last|>|»', re.I))
+                if next_links:
+                    # If there's a next link, try to find the last page number
+                    for link in next_links:
+                        href = link.get('href', '')
+                        if href:
+                            page_match = re.search(r'[Pp]age[=:]?(\d+)', href, re.I)
+                            if page_match:
+                                page_num = int(page_match.group(1))
+                                if page_num > max_page:
+                                    max_page = page_num
+                
+                # Estimate based on result count if available
+                result_text = soup.find(string=re.compile(r'(\d+)\s+results?', re.I))
+                if result_text:
+                    result_match = re.search(r'(\d+)', str(result_text))
+                    if result_match:
+                        result_count = int(result_match.group(1))
+                        # SimplePart typically shows ~20-50 products per page
+                        estimated_pages = (result_count // 30) + 1
+                        if estimated_pages > max_page:
+                            max_page = estimated_pages
+                            self.logger.info(f"Estimated {max_page} pages based on {result_count} results")
+                
+                total_pages = max_page
+                self.logger.info(f"Found pagination: {total_pages} total pages")
+            except Exception as e:
+                self.logger.debug(f"Could not determine total pages: {str(e)}, defaulting to 1")
             
-            for link in product_links:
-                href = link.get('href', '')
-                if href:
-                    full_url = href if href.startswith('http') else f"{self.base_url}{href}"
-                    if '?' in full_url:
-                        full_url = full_url.split('?')[0]
-                    if '#' in full_url:
-                        full_url = full_url.split('#')[0]
-                    full_url = full_url.rstrip('/')
-                    if full_url not in product_urls:
-                        product_urls.append(full_url)
+            # Extract products from all pages
+            for page_num in range(1, total_pages + 1):
+                try:
+                    if page_num > 1:
+                        # Navigate to the next page
+                        pag_url = f"{search_url}&page={page_num}"
+                        self.logger.info(f"Loading page {page_num}/{total_pages}: {pag_url}")
+                        
+                        try:
+                            self.page_load_timeout = 60
+                            self.driver.set_page_load_timeout(60)
+                            pag_html = self.get_page(pag_url, use_selenium=True, wait_time=2)
+                            if not pag_html or len(pag_html) < 5000:
+                                self.logger.warning(f"Page {page_num} content too short, skipping")
+                                continue
+                            
+                            # Wait for products to load
+                            try:
+                                WebDriverWait(self.driver, 10).until(
+                                    EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/p/Mazda__/']"))
+                                )
+                            except:
+                                pass
+                            
+                            # Scroll to load all products on this page
+                            self._scroll_to_load_content()
+                            pag_html = self.driver.page_source
+                            soup = BeautifulSoup(pag_html, 'lxml')
+                        except Exception as e:
+                            self.logger.warning(f"Error loading page {page_num}: {str(e)}")
+                            continue
+                        finally:
+                            try:
+                                self.page_load_timeout = original_timeout
+                                self.driver.set_page_load_timeout(original_timeout)
+                            except:
+                                pass
+                    
+                    # Extract product links from current page
+                    self.logger.info(f"Extracting products from page {page_num}/{total_pages}...")
+                    
+                    product_links = soup.find_all('a', href=re.compile(r'/p/Mazda__/'))
+                    
+                    page_count = 0
+                    for link in product_links:
+                        href = link.get('href', '')
+                        if href:
+                            full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                            if '?' in full_url:
+                                full_url = full_url.split('?')[0]
+                            if '#' in full_url:
+                                full_url = full_url.split('#')[0]
+                            full_url = full_url.rstrip('/')
+                            
+                            # Only collect individual product pages
+                            if '/p/Mazda__/' in full_url and full_url.endswith('.html'):
+                                if full_url not in product_urls:
+                                    product_urls.append(full_url)
+                                    page_count += 1
+                    
+                    self.logger.info(f"Page {page_num}/{total_pages}: Found {len(product_links)} product links, {page_count} new unique URLs (Total: {len(product_urls)})")
+                    
+                    # If we didn't find any new products, we might have reached the end
+                    if page_count == 0 and page_num > 1:
+                        self.logger.info(f"No new products found on page {page_num}, stopping pagination")
+                        break
+                    
+                except Exception as e:
+                    self.logger.error(f"Error processing page {page_num}: {str(e)}")
+                    import traceback
+                    self.logger.debug(f"Traceback: {traceback.format_exc()}")
+                    continue
             
-            self.logger.info(f"Found {len(product_links)} product links, {len(product_urls)} unique URLs")
+            self.logger.info(f"Finished processing all pages. Total unique product URLs found: {len(product_urls)}")
             
         except Exception as e:
             self.logger.error(f"Error searching for wheels: {str(e)}")
+            import traceback
+            self.logger.debug(f"Traceback: {traceback.format_exc()}")
         
         return product_urls
     
     def _browse_tire_wheel_category(self):
-        """Browse Tire and Wheel category"""
+        """Browse Tire and Wheel category with pagination"""
         product_urls = []
         
         try:
+            if not self.driver:
+                self.ensure_driver()
+            
             category_url = f"{self.base_url}/Mazda__/Tire-and-Wheel.html"
+            self.logger.info(f"Browsing category: {category_url}")
+            
             original_timeout = self.page_load_timeout
             try:
                 self.page_load_timeout = 60
@@ -130,6 +252,7 @@ class MazdaScraper(BaseScraper):
                 if not html:
                     return product_urls
             except Exception as e:
+                self.logger.error(f"Error loading category page: {str(e)}")
                 return product_urls
             finally:
                 try:
@@ -138,25 +261,118 @@ class MazdaScraper(BaseScraper):
                 except:
                     pass
             
+            # Wait for product links
+            try:
+                WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/p/Mazda__/']"))
+                )
+            except:
+                self.logger.warning("Product links not found immediately, continuing anyway...")
+            
+            # Scroll to load all products
             self._scroll_to_load_content()
             html = self.driver.page_source
             soup = BeautifulSoup(html, 'lxml')
             
-            product_links = soup.find_all('a', href=re.compile(r'/p/Mazda__/'))
-            for link in product_links:
-                href = link.get('href', '')
-                if href:
-                    full_url = href if href.startswith('http') else f"{self.base_url}{href}"
-                    if '?' in full_url:
-                        full_url = full_url.split('?')[0]
-                    if '#' in full_url:
-                        full_url = full_url.split('#')[0]
-                    full_url = full_url.rstrip('/')
-                    if full_url not in product_urls:
-                        product_urls.append(full_url)
+            # Extract total pages if pagination exists
+            total_pages = 1
+            try:
+                pagination_links = soup.find_all('a', href=re.compile(r'Tire-and-Wheel.*page|Page', re.I))
+                max_page = 1
+                
+                for link in pagination_links:
+                    href = link.get('href', '')
+                    page_match = re.search(r'[Pp]age[=:]?(\d+)', href + ' ' + link.get_text(strip=True), re.I)
+                    if page_match:
+                        page_num = int(page_match.group(1))
+                        if page_num > max_page:
+                            max_page = page_num
+                    
+                    link_text = link.get_text(strip=True)
+                    if link_text.isdigit():
+                        page_num = int(link_text)
+                        if page_num > max_page:
+                            max_page = page_num
+                
+                total_pages = max_page
+                if total_pages > 1:
+                    self.logger.info(f"Found pagination: {total_pages} total pages for category")
+            except Exception as e:
+                self.logger.debug(f"Could not determine total pages: {str(e)}, defaulting to 1")
+            
+            # Extract products from all pages
+            for page_num in range(1, total_pages + 1):
+                try:
+                    if page_num > 1:
+                        pag_url = f"{category_url}?page={page_num}"
+                        self.logger.info(f"Loading category page {page_num}/{total_pages}: {pag_url}")
+                        
+                        try:
+                            self.page_load_timeout = 60
+                            self.driver.set_page_load_timeout(60)
+                            pag_html = self.get_page(pag_url, use_selenium=True, wait_time=2)
+                            if not pag_html or len(pag_html) < 5000:
+                                self.logger.warning(f"Category page {page_num} content too short, skipping")
+                                continue
+                            
+                            try:
+                                WebDriverWait(self.driver, 10).until(
+                                    EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/p/Mazda__/']"))
+                                )
+                            except:
+                                pass
+                            
+                            self._scroll_to_load_content()
+                            pag_html = self.driver.page_source
+                            soup = BeautifulSoup(pag_html, 'lxml')
+                        except Exception as e:
+                            self.logger.warning(f"Error loading category page {page_num}: {str(e)}")
+                            continue
+                        finally:
+                            try:
+                                self.page_load_timeout = original_timeout
+                                self.driver.set_page_load_timeout(original_timeout)
+                            except:
+                                pass
+                    
+                    # Extract product links from current page
+                    product_links = soup.find_all('a', href=re.compile(r'/p/Mazda__/'))
+                    page_count = 0
+                    
+                    for link in product_links:
+                        href = link.get('href', '')
+                        if href:
+                            full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                            if '?' in full_url:
+                                full_url = full_url.split('?')[0]
+                            if '#' in full_url:
+                                full_url = full_url.split('#')[0]
+                            full_url = full_url.rstrip('/')
+                            
+                            # Only collect individual product pages
+                            if '/p/Mazda__/' in full_url and full_url.endswith('.html'):
+                                if full_url not in product_urls:
+                                    product_urls.append(full_url)
+                                    page_count += 1
+                    
+                    self.logger.info(f"Category page {page_num}/{total_pages}: Found {len(product_links)} product links, {page_count} new unique URLs (Total: {len(product_urls)})")
+                    
+                    if page_count == 0 and page_num > 1:
+                        self.logger.info(f"No new products found on category page {page_num}, stopping pagination")
+                        break
+                    
+                except Exception as e:
+                    self.logger.error(f"Error processing category page {page_num}: {str(e)}")
+                    import traceback
+                    self.logger.debug(f"Traceback: {traceback.format_exc()}")
+                    continue
+            
+            self.logger.info(f"Finished browsing category. Total unique URLs found: {len(product_urls)}")
             
         except Exception as e:
             self.logger.error(f"Error browsing category: {str(e)}")
+            import traceback
+            self.logger.debug(f"Traceback: {traceback.format_exc()}")
         
         return product_urls
     
@@ -388,22 +604,71 @@ class MazdaScraper(BaseScraper):
                             product_data['actual_price'] = self.extract_price(price_text)
                         break
             
-            # Extract MSRP
+            # Extract MSRP - SimplePart: Look for list price or MSRP
             msrp_elem = soup.find('span', class_=re.compile(r'list.*price|msrp', re.I))
             if msrp_elem:
                 msrp_text = self.safe_find_text(soup, msrp_elem)
                 product_data['msrp'] = self.extract_price(msrp_text)
+            
+            # Fallback: Look for text containing "MSRP" or "List Price"
+            if not product_data['msrp']:
+                msrp_text_elem = soup.find(string=re.compile(r'MSRP|List\s+Price', re.I))
+                if msrp_text_elem:
+                    parent = msrp_text_elem.find_parent()
+                    if parent:
+                        msrp_text = parent.get_text(strip=True)
+                        # Extract price from text like "MSRP: $123.45"
+                        price_match = re.search(r'[\$]?([\d,]+\.?\d*)', msrp_text)
+                        if price_match:
+                            product_data['msrp'] = self.extract_price(price_match.group(0))
+            
+            # Fallback: Look in price container for list price
+            if not product_data['msrp']:
+                price_container = soup.find('p', id='part-price-right')
+                if price_container:
+                    # Look for spans with list price indicators
+                    all_spans = price_container.find_all('span')
+                    for span in all_spans:
+                        span_text = span.get_text(strip=True)
+                        span_classes = span.get('class', [])
+                        if isinstance(span_classes, str):
+                            span_classes = [span_classes]
+                        span_classes_str = ' '.join(span_classes).lower()
+                        
+                        # Check if this span indicates list price (not sale price)
+                        if 'list' in span_classes_str or 'msrp' in span_classes_str or 'original' in span_classes_str:
+                            if 'bold' not in span_classes_str or 'text-lg' not in span_classes_str:
+                                # This might be the list price (not the bold sale price)
+                                product_data['msrp'] = self.extract_price(span_text)
+                                break
             
             # Extract image - SimplePart: #part-image-left a > img.img-responsive
             part_image_left = soup.find('div', id='part-image-left')
             if part_image_left:
                 img_link = part_image_left.find('a')
                 if img_link:
-                    img_elem = img_link.find('img', class_='img-responsive')
-                    if img_elem:
-                        img_url = img_elem.get('src') or img_elem.get('data-src')
-                        if img_url:
-                            product_data['image_url'] = f"https:{img_url}" if img_url.startswith('//') else img_url
+                    # Try href first (full-size image)
+                    img_href = img_link.get('href', '')
+                    if img_href:
+                        product_data['image_url'] = f"https:{img_href}" if img_href.startswith('//') else (f"{self.base_url}{img_href}" if img_href.startswith('/') else img_href)
+                    
+                    # Fallback to img tag
+                    if not product_data['image_url']:
+                        img_elem = img_link.find('img', class_='img-responsive')
+                        if not img_elem:
+                            img_elem = img_link.find('img')
+                        if img_elem:
+                            img_url = img_elem.get('src') or img_elem.get('data-src')
+                            if img_url:
+                                product_data['image_url'] = f"https:{img_url}" if img_url.startswith('//') else (f"{self.base_url}{img_url}" if img_url.startswith('/') else img_url)
+            
+            # Fallback: Try any img tag with product image indicators
+            if not product_data['image_url']:
+                img_elem = soup.find('img', src=re.compile(r'part|product|wheel', re.I))
+                if img_elem:
+                    img_url = img_elem.get('src') or img_elem.get('data-src')
+                    if img_url:
+                        product_data['image_url'] = f"https:{img_url}" if img_url.startswith('//') else (f"{self.base_url}{img_url}" if img_url.startswith('/') else img_url)
             
             # Extract description - SimplePart: p > strong.custom-blacktext
             desc_strongs = soup.find_all('strong', class_='custom-blacktext')
@@ -419,6 +684,20 @@ class MazdaScraper(BaseScraper):
                             product_data['description'] = desc_text
                             break
             
+            # Extract "Also Known As" - SimplePart: Look for alternative names
+            also_known_strongs = soup.find_all('strong', class_='custom-blacktext')
+            for strong_elem in also_known_strongs:
+                strong_text = strong_elem.get_text(strip=True)
+                if any(keyword in strong_text.lower() for keyword in ['also known as', 'other names', 'alternate', 'aka']):
+                    parent_p = strong_elem.find_parent('p')
+                    if parent_p:
+                        also_known_text = parent_p.get_text(strip=True, separator=' ')
+                        also_known_text = re.sub(r'^(Also\s+Known\s+As|Other\s+Names|Alternate|AKA)\s*:?\s*', '', also_known_text, flags=re.IGNORECASE)
+                        also_known_text = re.sub(r'\s+', ' ', also_known_text).strip()
+                        if also_known_text and len(also_known_text) > 3:
+                            product_data['also_known_as'] = also_known_text
+                            break
+            
             # Extract fitment - SimplePart: div#fitment table
             fitment_div = soup.find('div', id='fitment')
             if fitment_div:
@@ -431,34 +710,54 @@ class MazdaScraper(BaseScraper):
                             first_cell = cells[0]
                             cell_text = first_cell.get_text(strip=True)
                             
-                            # Parse: "Model (Year-Year) [Engine]"
+                            # Parse: "Model (Year-Year) [Engine]" or "Model (Year) [Engine]"
+                            # Extract engine (comma-separated values possible)
                             engine_match = re.search(r'\[([^\]]+)\]', cell_text)
-                            engine = engine_match.group(1).strip() if engine_match else ''
+                            engine_text = engine_match.group(1).strip() if engine_match else ''
+                            # Split comma-separated engines
+                            engines = [e.strip() for e in engine_text.split(',') if e.strip()] if engine_text else ['']
                             
                             model_text = re.sub(r'\s*\[[^\]]+\]', '', cell_text).strip()
                             
-                            year_range_match = re.search(r'\((\d{4})-(\d{4})\)', model_text)
+                            # Extract year range or single year
+                            year_range_match = re.search(r'\((\d{4})\s*-\s*(\d{4})\)', model_text)
+                            start_year = None
+                            end_year = None
+                            
                             if year_range_match:
-                                year = year_range_match.group(1)
-                                model = model_text.strip()
+                                start_year = int(year_range_match.group(1))
+                                end_year = int(year_range_match.group(2))
                             else:
-                                year = ''
-                                model = model_text.strip()
+                                # Try single year: "Model (Year)"
+                                single_year_match = re.search(r'\((\d{4})\)', model_text)
+                                if single_year_match:
+                                    start_year = int(single_year_match.group(1))
+                                    end_year = int(single_year_match.group(1))
                             
-                            make = ''
-                            model_without_year = re.sub(r'\s*\(\d{4}-\d{4}\)', '', model).strip()
-                            model_words = model_without_year.split()
-                            if len(model_words) >= 1:
-                                make = model_words[0]
+                            # Remove year info from model text
+                            model_clean = re.sub(r'\s*\(\d{4}\s*-\s*\d{4}\)', '', model_text).strip()
+                            model_clean = re.sub(r'\s*\(\d{4}\)', '', model_clean).strip()
                             
-                            if model:
-                                product_data['fitments'].append({
-                                    'year': year,
-                                    'make': make,
-                                    'model': model,
-                                    'trim': '',
-                                    'engine': engine
-                                })
+                            make = 'Mazda'  # Default make
+                            model = model_clean
+                            
+                            # Generate all combinations: year × engine
+                            if start_year is not None and end_year is not None:
+                                years = [str(y) for y in range(start_year, end_year + 1)]
+                            elif start_year is not None:
+                                years = [str(start_year)]
+                            else:
+                                years = ['']
+                            
+                            for year_str in years:
+                                for engine_val in engines:
+                                    product_data['fitments'].append({
+                                        'year': year_str,
+                                        'make': make,
+                                        'model': model,
+                                        'trim': '',
+                                        'engine': engine_val
+                                    })
             
             if not product_data['fitments']:
                 product_data['fitments'].append({
