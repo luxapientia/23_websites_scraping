@@ -57,24 +57,23 @@ class MazdaScraper(BaseScraper):
         return product_urls
     
     def _search_for_wheels(self):
-        """Search for wheels using site search with pagination"""
+        """Search for wheels using site search - single page with 250 results, no pagination"""
         product_urls = []
         
         try:
             if not self.driver:
                 self.ensure_driver()
             
-            # Initial search URL
-            search_url = f"{self.base_url}/productSearch.aspx?searchTerm=wheel"
+            # Search URL with numResults=250 to get all products on one page (no pagination)
+            search_url = f"{self.base_url}/productSearch.aspx?ukey_make=995&modelYear=0&ukey_model=0&ukey_trimLevel=0&ukey_driveline=0&ukey_Category=0&numResults=250&sortOrder=Relevance&ukey_tag=0&isOnSale=0&isAccessory=0&isPerformance=0&showAllModels=1&searchTerm=wheel"
             self.logger.info(f"Searching: {search_url}")
             
             original_timeout = self.page_load_timeout
             try:
                 self.page_load_timeout = 60
                 self.driver.set_page_load_timeout(60)
-                html = self.get_page(search_url, use_selenium=True, wait_time=2)
-                if not html:
-                    return product_urls
+                self.driver.get(search_url)
+                time.sleep(3)
             except Exception as e:
                 self.logger.error(f"Error loading search page: {str(e)}")
                 return product_urls
@@ -85,120 +84,34 @@ class MazdaScraper(BaseScraper):
                 except:
                     pass
             
-            # Wait for product links to appear
+            # Wait for product links to appear using Selenium
             try:
-                WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/p/Mazda__/']"))
+                WebDriverWait(self.driver, 20).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/p/']"))
                 )
-            except:
+                self.logger.info("Product links detected on page")
+            except TimeoutException:
                 self.logger.warning("Product links not found immediately, continuing anyway...")
             
-            # Scroll to load all products on the first page
+            # Scroll to load all products (lazy loading)
             self._scroll_to_load_content()
-            html = self.driver.page_source
-            soup = BeautifulSoup(html, 'lxml')
             
-            # Extract total number of pages from pagination
-            total_pages = 1
+            # Wait a bit more for any dynamic content
+            time.sleep(3)
+            
+            # Try to find product links using Selenium first (more reliable for dynamic content)
             try:
-                # Look for pagination links - SimplePart typically uses pagination controls
-                pagination_links = soup.find_all('a', href=re.compile(r'productSearch\.aspx.*page|Page', re.I))
-                max_page = 1
+                selenium_links = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='/p/Mazda__/']")
+                self.logger.info(f"Found {len(selenium_links)} product links via Selenium")
                 
-                for link in pagination_links:
-                    href = link.get('href', '')
-                    # Extract page number from URL or text
-                    page_match = re.search(r'[Pp]age[=:]?(\d+)', href + ' ' + link.get_text(strip=True), re.I)
-                    if page_match:
-                        page_num = int(page_match.group(1))
-                        if page_num > max_page:
-                            max_page = page_num
-                    
-                    # Also check link text for page numbers
-                    link_text = link.get_text(strip=True)
-                    if link_text.isdigit():
-                        page_num = int(link_text)
-                        if page_num > max_page:
-                            max_page = page_num
-                
-                # Check for "Next" or "Last" links which might indicate more pages
-                next_links = soup.find_all('a', string=re.compile(r'next|last|>|»', re.I))
-                if next_links:
-                    # If there's a next link, try to find the last page number
-                    for link in next_links:
-                        href = link.get('href', '')
+                for link_elem in selenium_links:
+                    try:
+                        href = link_elem.get_attribute('href')
                         if href:
-                            page_match = re.search(r'[Pp]age[=:]?(\d+)', href, re.I)
-                            if page_match:
-                                page_num = int(page_match.group(1))
-                                if page_num > max_page:
-                                    max_page = page_num
-                
-                # Estimate based on result count if available
-                result_text = soup.find(string=re.compile(r'(\d+)\s+results?', re.I))
-                if result_text:
-                    result_match = re.search(r'(\d+)', str(result_text))
-                    if result_match:
-                        result_count = int(result_match.group(1))
-                        # SimplePart typically shows ~20-50 products per page
-                        estimated_pages = (result_count // 30) + 1
-                        if estimated_pages > max_page:
-                            max_page = estimated_pages
-                            self.logger.info(f"Estimated {max_page} pages based on {result_count} results")
-                
-                total_pages = max_page
-                self.logger.info(f"Found pagination: {total_pages} total pages")
-            except Exception as e:
-                self.logger.debug(f"Could not determine total pages: {str(e)}, defaulting to 1")
-            
-            # Extract products from all pages
-            for page_num in range(1, total_pages + 1):
-                try:
-                    if page_num > 1:
-                        # Navigate to the next page
-                        pag_url = f"{search_url}&page={page_num}"
-                        self.logger.info(f"Loading page {page_num}/{total_pages}: {pag_url}")
-                        
-                        try:
-                            self.page_load_timeout = 60
-                            self.driver.set_page_load_timeout(60)
-                            pag_html = self.get_page(pag_url, use_selenium=True, wait_time=2)
-                            if not pag_html or len(pag_html) < 5000:
-                                self.logger.warning(f"Page {page_num} content too short, skipping")
-                                continue
-                            
-                            # Wait for products to load
-                            try:
-                                WebDriverWait(self.driver, 10).until(
-                                    EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/p/Mazda__/']"))
-                                )
-                            except:
-                                pass
-                            
-                            # Scroll to load all products on this page
-                            self._scroll_to_load_content()
-                            pag_html = self.driver.page_source
-                            soup = BeautifulSoup(pag_html, 'lxml')
-                        except Exception as e:
-                            self.logger.warning(f"Error loading page {page_num}: {str(e)}")
-                            continue
-                        finally:
-                            try:
-                                self.page_load_timeout = original_timeout
-                                self.driver.set_page_load_timeout(original_timeout)
-                            except:
-                                pass
-                    
-                    # Extract product links from current page
-                    self.logger.info(f"Extracting products from page {page_num}/{total_pages}...")
-                    
-                    product_links = soup.find_all('a', href=re.compile(r'/p/Mazda__/'))
-                    
-                    page_count = 0
-                    for link in product_links:
-                        href = link.get('href', '')
-                        if href:
+                            # Normalize URL
                             full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                            
+                            # Remove query parameters and fragments
                             if '?' in full_url:
                                 full_url = full_url.split('?')[0]
                             if '#' in full_url:
@@ -209,22 +122,101 @@ class MazdaScraper(BaseScraper):
                             if '/p/Mazda__/' in full_url and full_url.endswith('.html'):
                                 if full_url not in product_urls:
                                     product_urls.append(full_url)
-                                    page_count += 1
-                    
-                    self.logger.info(f"Page {page_num}/{total_pages}: Found {len(product_links)} product links, {page_count} new unique URLs (Total: {len(product_urls)})")
-                    
-                    # If we didn't find any new products, we might have reached the end
-                    if page_count == 0 and page_num > 1:
-                        self.logger.info(f"No new products found on page {page_num}, stopping pagination")
-                        break
-                    
-                except Exception as e:
-                    self.logger.error(f"Error processing page {page_num}: {str(e)}")
-                    import traceback
-                    self.logger.debug(f"Traceback: {traceback.format_exc()}")
-                    continue
+                    except Exception as e:
+                        self.logger.debug(f"Error extracting link from Selenium element: {str(e)}")
+                        continue
+            except Exception as e:
+                self.logger.debug(f"Error finding links via Selenium: {str(e)}")
             
-            self.logger.info(f"Finished processing all pages. Total unique product URLs found: {len(product_urls)}")
+            # Also try BeautifulSoup parsing as fallback
+            html = self.driver.page_source
+            soup = BeautifulSoup(html, 'lxml')
+            
+            # Try multiple patterns to find product links (SimplePart platform)
+            # Pattern 1: /p/Mazda__/Product-Name/ID/PartNumber.html
+            product_links = soup.find_all('a', href=re.compile(r'/p/Mazda__/', re.I))
+            
+            # Pattern 2: Try looking in product containers/rows
+            if not product_links:
+                product_containers = soup.find_all(['div', 'li', 'tr'], class_=re.compile(r'product|item|part|row', re.I))
+                for container in product_containers:
+                    container_links = container.find_all('a', href=re.compile(r'/p/Mazda__/', re.I))
+                    product_links.extend(container_links)
+            
+            # Pattern 3: Look for any link with /p/ pattern (case-insensitive)
+            if not product_links:
+                all_links = soup.find_all('a', href=True)
+                for link in all_links:
+                    href = link.get('href', '')
+                    if href and '/p/' in href.lower() and 'mazda' in href.lower():
+                        product_links.append(link)
+            
+            # Pattern 4: Try looking for links ending with .html in product sections
+            if not product_links:
+                product_sections = soup.find_all(['div', 'section', 'table', 'tbody'], class_=re.compile(r'product|result|search|item|row', re.I))
+                for section in product_sections:
+                    section_links = section.find_all('a', href=re.compile(r'\.html', re.I))
+                    for link in section_links:
+                        href = link.get('href', '')
+                        if href and ('/p/' in href.lower() or 'mazda' in href.lower()):
+                            product_links.append(link)
+            
+            # Pattern 5: Use JavaScript to find all links (most comprehensive)
+            if not product_links:
+                try:
+                    js_links = self.driver.execute_script("""
+                        var links = [];
+                        var allLinks = document.querySelectorAll('a[href]');
+                        for (var i = 0; i < allLinks.length; i++) {
+                            var href = allLinks[i].href || allLinks[i].getAttribute('href');
+                            if (href && href.toLowerCase().indexOf('/p/mazda__/') !== -1 && href.toLowerCase().endsWith('.html')) {
+                                links.push(href);
+                            }
+                        }
+                        return links;
+                    """)
+                    self.logger.info(f"Found {len(js_links)} product links via JavaScript")
+                    for js_link in js_links:
+                        if js_link and js_link not in product_urls:
+                            # Normalize URL
+                            full_url = js_link if js_link.startswith('http') else f"{self.base_url}{js_link}"
+                            if '?' in full_url:
+                                full_url = full_url.split('?')[0]
+                            if '#' in full_url:
+                                full_url = full_url.split('#')[0]
+                            full_url = full_url.rstrip('/')
+                            if '/p/Mazda__/' in full_url and full_url.endswith('.html'):
+                                product_urls.append(full_url)
+                except Exception as e:
+                    self.logger.debug(f"Error finding links via JavaScript: {str(e)}")
+            
+            self.logger.info(f"Found {len(product_links)} potential product links via BeautifulSoup")
+            
+            # Extract and validate product URLs from BeautifulSoup results
+            for link in product_links:
+                href = link.get('href', '')
+                if not href:
+                    continue
+                
+                # Normalize URL
+                full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                
+                # Remove query parameters and fragments
+                if '?' in full_url:
+                    full_url = full_url.split('?')[0]
+                if '#' in full_url:
+                    full_url = full_url.split('#')[0]
+                full_url = full_url.rstrip('/')
+                
+                # Only collect individual product pages
+                # SimplePart product URLs: /p/Mazda__/Product-Name/ID/PartNumber.html
+                if '/p/Mazda__/' in full_url and full_url.endswith('.html'):
+                    if full_url not in product_urls:
+                        product_urls.append(full_url)
+            
+            # Remove duplicates and sort
+            product_urls = sorted(list(set(product_urls)))
+            self.logger.info(f"Extracted {len(product_urls)} unique product URLs from search page")
             
         except Exception as e:
             self.logger.error(f"Error searching for wheels: {str(e)}")
