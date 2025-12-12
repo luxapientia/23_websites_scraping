@@ -351,146 +351,508 @@ class JaguarScraper(BaseScraperWithExtension):
         }
         
         try:
-            # Extract title - SimplePart structure: h1 or h1 > span
-            title_elem = soup.find('h1')
+            # Extract title - Structure: <span class="prodDescriptH2">Wheel</span>
+            title_elem = soup.find('span', class_='prodDescriptH2')
             if title_elem:
-                span_elem = title_elem.find('span')
-                if span_elem:
-                    product_data['title'] = span_elem.get_text(strip=True)
-                else:
-                    product_data['title'] = title_elem.get_text(strip=True)
+                product_data['title'] = title_elem.get_text(strip=True)
             
             if not product_data['title']:
-                h2_elem = soup.find('h2', class_='subh1')
-                if h2_elem:
-                    product_data['title'] = h2_elem.get_text(strip=True)
+                # Fallback: h1 or h1 > span
+                title_elem = soup.find('h1')
+                if title_elem:
+                    span_elem = title_elem.find('span')
+                    if span_elem:
+                        product_data['title'] = span_elem.get_text(strip=True)
+                    else:
+                        product_data['title'] = title_elem.get_text(strip=True)
             
             if not product_data['title']:
+                # Fallback: title tag
                 title_tag = soup.find('title')
                 if title_tag:
-                    product_data['title'] = self.safe_find_text(soup, title_tag)
+                    title_text = title_tag.get_text(strip=True)
+                    if '|' in title_text:
+                        title_text = title_text.split('|')[0].strip()
+                    product_data['title'] = title_text
             
             if not product_data['title'] or len(product_data['title']) < 3:
+                self.logger.warning(f"⚠️ No valid title found for {url}")
                 return None
             
             self.logger.info(f"📝 Found title: {self.safe_str(product_data['title'][:60])}")
             
-            # Extract SKU/Part Number - Pattern from URL: /p/Jaguar__/Product-Name/ID/PartNumber.html
-            url_match = re.search(r'/p/Jaguar__/[^/]+/\d+/([^/]+)\.html', url)
-            if url_match:
-                product_data['sku'] = url_match.group(1)
-                product_data['pn'] = self.clean_sku(product_data['sku'])
+            # Extract SKU/Part Number - Structure: <span itemprop="value" class="body-3 stock-code-text"><strong>C2D7283</strong></span>
+            sku_span = soup.find('span', {'itemprop': 'value', 'class': lambda x: x and 'stock-code-text' in ' '.join(x) if isinstance(x, list) else 'stock-code-text' in str(x)})
+            if not sku_span:
+                # Try finding by class only
+                sku_span = soup.find('span', class_=lambda x: x and 'stock-code-text' in ' '.join(x) if isinstance(x, list) else 'stock-code-text' in str(x))
             
-            # Also try page
+            if sku_span:
+                strong_elem = sku_span.find('strong')
+                if strong_elem:
+                    part_number = strong_elem.get_text(strip=True)
+                else:
+                    part_number = sku_span.get_text(strip=True)
+                
+                if part_number:
+                    product_data['sku'] = part_number
+                    product_data['pn'] = self.clean_sku(part_number)
+                    self.logger.info(f"📦 Found SKU from page: {self.safe_str(product_data['sku'])}")
+            
+            # Fallback: Pattern from URL: /p/Jaguar__/Product-Name/ID/PartNumber.html
             if not product_data['sku']:
-                pn_elem = soup.find('p', class_='mt-sm')
-                if pn_elem:
-                    raw_text = pn_elem.get_text(strip=True)
-                    part_number = re.sub(r'^part\s*number\s*:?\s*', '', raw_text, flags=re.IGNORECASE)
-                    if part_number:
-                        product_data['sku'] = part_number
-                        product_data['pn'] = self.clean_sku(part_number)
+                url_match = re.search(r'/p/Jaguar__/[^/]+/\d+/([^/]+)\.html', url)
+                if url_match:
+                    product_data['sku'] = url_match.group(1)
+                    product_data['pn'] = self.clean_sku(product_data['sku'])
             
             # Check if wheel product
             try:
                 is_wheel = self.is_wheel_product(product_data['title'])
                 if not is_wheel:
+                    self.logger.info(f"⏭️ Skipping non-wheel product: {product_data['title']}")
                     return None
-            except:
+            except Exception as e:
+                self.logger.warning(f"Error checking if wheel product: {str(e)}")
                 return None
             
-            # Extract price - SimplePart: p#part-price-right > span.bold.text-lg
-            price_container = soup.find('p', id='part-price-right')
-            if price_container:
-                price_spans = price_container.find_all('span')
-                for span in price_spans:
-                    span_classes = span.get('class', [])
-                    if isinstance(span_classes, str):
-                        span_classes = [span_classes]
-                    span_classes_str = ' '.join(span_classes).lower()
-                    if 'bold' in span_classes_str and 'text-lg' in span_classes_str:
-                        price_text = span.get_text(strip=True)
-                        if '€' in price_text or 'EUR' in price_text.upper():
-                            price_value = self.extract_price(price_text)
-                            if price_value:
-                                product_data['actual_price'] = self.convert_currency(price_value, 'EUR', 'USD')
-                        else:
-                            product_data['actual_price'] = self.extract_price(price_text)
-                        break
+            # Extract AC$ (actual price) - Structure: <span class="productPriceSpan money-3">$ 1,209.26</span>
+            price_span = soup.find('span', class_=lambda x: x and 'productPriceSpan' in ' '.join(x) if isinstance(x, list) else 'productPriceSpan' in str(x))
+            if price_span:
+                price_text = price_span.get_text(strip=True)
+                product_data['actual_price'] = self.extract_price(price_text)
             
-            # Extract MSRP
-            msrp_elem = soup.find('span', class_=re.compile(r'list.*price|msrp', re.I))
+            # Also try meta itemprop="price"
+            if not product_data['actual_price']:
+                price_meta = soup.find('meta', {'itemprop': 'price'})
+                if price_meta:
+                    price_content = price_meta.get('content', '')
+                    product_data['actual_price'] = self.extract_price(price_content)
+            
+            # Extract MSRP - try multiple selectors
+            msrp_elem = soup.find('div', class_=lambda x: x and 'msrpRow' in ' '.join(x) if isinstance(x, list) else 'msrpRow' in str(x))
+            if not msrp_elem:
+                msrp_elem = soup.find('span', class_=re.compile(r'list.*price|msrp', re.I))
             if msrp_elem:
-                msrp_text = self.safe_find_text(soup, msrp_elem)
+                msrp_text = msrp_elem.get_text(strip=True)
+                # Remove "MSRP: " prefix if present
+                msrp_text = re.sub(r'^MSRP:\s*', '', msrp_text, flags=re.IGNORECASE)
                 product_data['msrp'] = self.extract_price(msrp_text)
             
-            # Extract image - SimplePart: #part-image-left a > img.img-responsive
-            part_image_left = soup.find('div', id='part-image-left')
-            if part_image_left:
-                img_link = part_image_left.find('a')
-                if img_link:
-                    img_elem = img_link.find('img', class_='img-responsive')
-                    if img_elem:
-                        img_url = img_elem.get('src') or img_elem.get('data-src')
-                        if img_url:
-                            product_data['image_url'] = f"https:{img_url}" if img_url.startswith('//') else img_url
+            # Extract image - Structure: <img itemprop="image" src="https://images.simplepart.net/...">
+            img_elem = soup.find('img', {'itemprop': 'image'})
+            if img_elem:
+                img_url = img_elem.get('src') or img_elem.get('data-src')
+                if img_url:
+                    if img_url.startswith('//'):
+                        product_data['image_url'] = f"https:{img_url}"
+                    elif img_url.startswith('/'):
+                        product_data['image_url'] = f"{self.base_url}{img_url}"
+                    else:
+                        product_data['image_url'] = img_url
             
-            # Extract description - SimplePart: p > strong.custom-blacktext
-            desc_strongs = soup.find_all('strong', class_='custom-blacktext')
-            for desc_strong in desc_strongs:
-                strong_text = desc_strong.get_text(strip=True)
-                if 'Product Description' in strong_text:
-                    desc_p = desc_strong.find_parent('p')
-                    if desc_p:
-                        desc_text = desc_p.get_text(strip=True, separator=' ')
-                        desc_text = re.sub(r'^Product\s+Description\s*:?\s*', '', desc_text, flags=re.IGNORECASE)
-                        desc_text = re.sub(r'\s+', ' ', desc_text).strip()
-                        if desc_text and len(desc_text) > 10:
-                            product_data['description'] = desc_text
+            # Fallback: try og:image meta tag
+            if not product_data['image_url']:
+                og_image = soup.find('meta', property='og:image')
+                if og_image:
+                    img_url = og_image.get('content', '')
+                    if img_url:
+                        if img_url.startswith('//'):
+                            product_data['image_url'] = f"https:{img_url}"
+                        elif img_url.startswith('/'):
+                            product_data['image_url'] = f"{self.base_url}{img_url}"
+                        else:
+                            product_data['image_url'] = img_url
+            
+            # Extract description - Structure: <p>Rim. Wheel - Road - ALLOY. ...</p>
+            # Look for description in item-desc div
+            desc_div = soup.find('div', class_=lambda x: x and 'item-desc' in ' '.join(x) if isinstance(x, list) else 'item-desc' in str(x))
+            if desc_div:
+                desc_paragraphs = desc_div.find_all('p')
+                desc_texts = []
+                for p in desc_paragraphs:
+                    p_text = p.get_text(strip=True, separator=' ')
+                    if p_text and len(p_text) > 10:
+                        desc_texts.append(p_text)
+                if desc_texts:
+                    product_data['description'] = ' '.join(desc_texts)
+                    # Clean up description
+                    product_data['description'] = re.sub(r'\s+', ' ', product_data['description']).strip()
+            
+            # Fallback: try meta description
+            if not product_data['description']:
+                desc_meta = soup.find('meta', {'name': 'description'})
+                if desc_meta:
+                    product_data['description'] = desc_meta.get('content', '').strip()
+            
+            # Extract fitment - Need to click "What This Fits" tab and "Show More" button to load all fitment data
+            # Steps:
+            # 1. Click the "What This Fits" tab
+            # 2. Wait for tab panel to load
+            # 3. Click "Show More" button
+            # 4. Wait for all fitment data to load
+            # 5. Extract fitment data from updated HTML
+            
+            fitment_rows_elements = []  # Initialize to store Selenium WebElement objects
+            selenium_extraction_success = False
+            
+            if self.driver:
+                try:
+                    self.logger.info("🔍 Clicking 'What This Fits' tab to load fitment data...")
+                    
+                    # Step 1: Find and click the "What This Fits" tab
+                    wait = WebDriverWait(self.driver, 10)
+                    tab_selectors = [
+                        (By.ID, 'fitmentTab'),
+                        (By.CSS_SELECTOR, 'a[href="#fitments"]'),
+                        (By.CSS_SELECTOR, 'li#ctl00_Content_PageBody_ProductTabsLegacy_fitmentTabLI a'),
+                        (By.XPATH, '//a[contains(text(), "What This Fits")]'),
+                        (By.ID, 'WhatThisFitsTabComponent_TAB'),
+                        (By.CSS_SELECTOR, 'a[href="#WhatThisFitsTabComponent"]'),
+                    ]
+                    
+                    tab_clicked = False
+                    for selector_type, selector_value in tab_selectors:
+                        try:
+                            tab_element = wait.until(EC.element_to_be_clickable((selector_type, selector_value)))
+                            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", tab_element)
+                            time.sleep(0.5)
+                            tab_element.click()
+                            tab_clicked = True
+                            self.logger.info("✓ Clicked 'What This Fits' tab")
                             break
-            
-            # Extract fitment - SimplePart: div#fitment table
-            fitment_div = soup.find('div', id='fitment')
-            if fitment_div:
-                fitment_table = fitment_div.find('table')
-                if fitment_table:
-                    rows = fitment_table.find_all('tr')
-                    for row in rows[1:]:  # Skip header
-                        cells = row.find_all(['td', 'th'])
-                        if len(cells) >= 1:
-                            first_cell = cells[0]
-                            cell_text = first_cell.get_text(strip=True)
+                        except Exception as e:
+                            self.logger.debug(f"Attempt to click tab with {selector_type}={selector_value} failed: {e}")
+                            continue
+                    
+                    if not tab_clicked:
+                        self.logger.warning("⚠️ Could not find or click 'What This Fits' tab")
+                    else:
+                        # Step 2: Wait for tab panel to be visible and loaded
+                        time.sleep(1)  # Initial wait for tab panel to appear
+                        
+                        # Wait for tab panel to be visible - try multiple IDs/selectors
+                        tab_panel_found = False
+                        tab_panel_selectors = [
+                            (By.ID, 'fitments'),
+                            (By.CSS_SELECTOR, 'div#fitments.tab-pane'),
+                            (By.CSS_SELECTOR, 'div[id="ctl00_Content_PageBody_ProductTabsLegacy_div_applicationListContainer"]'),
+                            (By.ID, 'WhatThisFitsTabComponent_TABPANEL'),
+                            (By.CSS_SELECTOR, 'div[role="tabpanel"]'),
+                            (By.CSS_SELECTOR, 'div.tab-pane.active'),
+                            (By.CSS_SELECTOR, 'div[id*="WhatThisFits"]'),
+                            (By.CSS_SELECTOR, 'div[id*="TabPanel"]'),
+                        ]
+                        
+                        for selector_type, selector_value in tab_panel_selectors:
+                            try:
+                                tab_panel = wait.until(EC.presence_of_element_located((selector_type, selector_value)))
+                                time.sleep(1)  # Wait a bit more for content to render
+                                self.logger.info(f"✓ Tab panel loaded (found via: {selector_value})")
+                                tab_panel_found = True
+                                break
+                            except Exception as e:
+                                continue
+                        
+                        if not tab_panel_found:
+                            self.logger.warning("⚠️ Tab panel not found with standard selectors, but continuing anyway...")
+                        
+                        # Step 3: Click "Show More" button if present
+                        show_more_button_selectors = [
+                            (By.ID, 'ctl00_Content_PageBody_ProductTabsLegacy_showAllApplications'),
+                            (By.CSS_SELECTOR, 'a.showMoreBtnLink'),
+                            (By.CSS_SELECTOR, 'a.btn-link.showMoreBtnLink'),
+                            (By.XPATH, '//a[contains(text(), "Show More")]'),
+                            (By.XPATH, '//a[contains(@class, "showMore")]'),
+                            (By.CSS_SELECTOR, 'button.showMoreBtnLink'),
+                            (By.XPATH, '//button[contains(text(), "Show More")]'),
+                        ]
+                        show_more_clicked = False
+                        try:
+                            for selector_type, selector_value in show_more_button_selectors:
+                                try:
+                                    show_more_button = wait.until(EC.element_to_be_clickable((selector_type, selector_value)))
+                                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", show_more_button)
+                                    time.sleep(0.5)
+                                    show_more_button.click()
+                                    show_more_clicked = True
+                                    self.logger.info("✓ Clicked 'Show More' button")
+                                    break
+                                except Exception as e:
+                                    continue
                             
-                            # Parse: "Model (Year-Year) [Engine]"
-                            engine_match = re.search(r'\[([^\]]+)\]', cell_text)
-                            engine = engine_match.group(1).strip() if engine_match else ''
+                            if not show_more_clicked:
+                                self.logger.warning("⚠️ Could not find or click 'Show More' button (may not be present)")
                             
-                            model_text = re.sub(r'\s*\[[^\]]+\]', '', cell_text).strip()
+                            # Step 4: Wait for all fitment data to load
+                            # Wait longer for dynamic content to load
+                            time.sleep(2)
                             
-                            year_range_match = re.search(r'\((\d{4})-(\d{4})\)', model_text)
-                            if year_range_match:
-                                year = year_range_match.group(1)
-                                model = model_text.strip()
+                            # Wait for fitment rows to appear - try multiple selectors
+                            fitment_loaded = False
+                            fitment_selectors = [
+                                'div#ctl00_Content_PageBody_ProductTabsLegacy_div_applicationListContainer table',
+                                'div#ctl00_Content_PageBody_ProductTabsLegacy_div_applicationListContainer tbody tr',
+                                'div.whatThisFitsFitment',
+                                'div.whatThisFitsFitment span',
+                                'div.col-lg-12 .whatThisFitsFitment',
+                                'div#WhatThisFitsTabComponent_TABPANEL div.col-lg-12',
+                                'div.whatThisFitsYears',
+                                'div[class*="whatThisFits"]',
+                            ]
+                            
+                            for selector in fitment_selectors:
+                                try:
+                                    # Use longer timeout for dynamic content
+                                    extended_wait = WebDriverWait(self.driver, 15)
+                                    extended_wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
+                                    fitment_loaded = True
+                                    self.logger.info(f"✓ Fitment data loaded (found via: {selector})")
+                                    break
+                                except Exception as e:
+                                    continue
+                            
+                            if not fitment_loaded:
+                                # Try waiting for any content in the tab panel
+                                try:
+                                    extended_wait = WebDriverWait(self.driver, 10)
+                                    extended_wait.until(lambda driver: len(driver.find_elements(By.CSS_SELECTOR, 'div#ctl00_Content_PageBody_ProductTabsLegacy_div_applicationListContainer table tbody tr, div#WhatThisFitsTabComponent_TABPANEL div.col-lg-12')) > 0)
+                                    fitment_loaded = True
+                                    self.logger.info("✓ Fitment data loaded (found via row count check)")
+                                except Exception as e:
+                                    # Try JavaScript check as fallback
+                                    try:
+                                        row_count = self.driver.execute_script(
+                                            "return document.querySelectorAll('div#ctl00_Content_PageBody_ProductTabsLegacy_div_applicationListContainer table tbody tr, div#WhatThisFitsTabComponent_TABPANEL div.col-lg-12, div.whatThisFitsFitment, div[class*=\"whatThisFits\"]').length;"
+                                        )
+                                        if row_count > 0:
+                                            fitment_loaded = True
+                                            self.logger.info(f"✓ Fitment data loaded (found {row_count} rows via JavaScript)")
+                                        else:
+                                            self.logger.warning(f"⚠️ Fitment rows not found via JavaScript (count: {row_count}), but continuing anyway")
+                                    except Exception as js_error:
+                                        self.logger.warning(f"⚠️ Fitment rows check failed, but continuing anyway: {str(js_error)}")
+                            
+                            # Additional wait for all content to fully render
+                            time.sleep(2)
+                            
+                            # Final check: verify elements exist before extraction - try multiple selectors
+                            try:
+                                final_check = self.driver.execute_script(
+                                    "return document.querySelectorAll('div#ctl00_Content_PageBody_ProductTabsLegacy_div_applicationListContainer table tbody tr, div.whatThisFitsFitment, div#WhatThisFitsTabComponent_TABPANEL div.col-lg-12, div[class*=\"whatThisFits\"]').length;"
+                                )
+                                if final_check > 0:
+                                    self.logger.info(f"✓ Verified {final_check} fitment elements exist before extraction")
+                                else:
+                                    self.logger.warning(f"⚠️ No fitment elements found in final check (count: {final_check})")
+                            except Exception as e:
+                                self.logger.debug(f"Final check error (non-critical): {str(e)}")
+                        
+                        except Exception as e:
+                            self.logger.warning(f"⚠️ Error clicking 'Show More': {str(e)}")
+                        
+                        # Step 5: Extract fitment data directly using Selenium (more reliable for dynamic content)
+                        # Use Selenium to find elements directly instead of BeautifulSoup
+                        try:
+                            # Find all fitment rows using Selenium - try multiple selectors
+                            # Jaguar uses a table structure: div#ctl00_Content_PageBody_ProductTabsLegacy_div_applicationListContainer > table > tbody > tr
+                            fitment_row_elements = self.driver.find_elements(By.CSS_SELECTOR, 'div#ctl00_Content_PageBody_ProductTabsLegacy_div_applicationListContainer table tbody tr')
+                            
+                            if not fitment_row_elements:
+                                # Try alternative selectors (SimplePart standard)
+                                fitment_row_elements = self.driver.find_elements(By.CSS_SELECTOR, 'div#WhatThisFitsTabComponent_TABPANEL div.col-lg-12')
+                            
+                            if not fitment_row_elements:
+                                # Try alternative selector
+                                fitment_row_elements = self.driver.find_elements(By.CSS_SELECTOR, 'div.whatThisFitsFitment')
+                            
+                            if not fitment_row_elements:
+                                # Try finding by class pattern
+                                fitment_row_elements = self.driver.find_elements(By.CSS_SELECTOR, 'div[class*="whatThisFits"]')
+                            
+                            if not fitment_row_elements:
+                                # Try finding any div.col-lg-12 that might contain fitment data
+                                all_cols = self.driver.find_elements(By.CSS_SELECTOR, 'div.col-lg-12')
+                                fitment_row_elements = []
+                                for col in all_cols:
+                                    try:
+                                        col_html = col.get_attribute('outerHTML') or ''
+                                        if 'whatThisFits' in col_html.lower() or 'fitment' in col_html.lower():
+                                            fitment_row_elements.append(col)
+                                    except:
+                                        continue
+                            
+                            if fitment_row_elements:
+                                self.logger.info(f"✓ Found {len(fitment_row_elements)} fitment rows via Selenium")
+                                fitment_rows_elements = fitment_row_elements
+                                selenium_extraction_success = True
                             else:
-                                year = ''
-                                model = model_text.strip()
+                                self.logger.warning("⚠️ No fitment rows found via Selenium selectors")
+                        
+                        except Exception as selenium_error:
+                            self.logger.warning(f"⚠️ Error extracting fitment via Selenium: {str(selenium_error)}")
+                            selenium_extraction_success = False
+                
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Error interacting with fitment tab: {str(e)}")
+            
+            # Extract fitment data from updated HTML (or fallback to initial HTML if Selenium failed)
+            if selenium_extraction_success and fitment_rows_elements:
+                self.logger.info(f"🔍 Processing {len(fitment_rows_elements)} fitment rows from Selenium WebElements...")
+                for idx, row_element in enumerate(fitment_rows_elements):
+                    try:
+                        # Get outerHTML of the WebElement and parse with BeautifulSoup
+                        row_html = row_element.get_attribute('outerHTML')
+                        if not row_html:
+                            continue
+                        
+                        row_soup = BeautifulSoup(row_html, 'lxml')
+                        
+                        # Handle both table rows (tr) and div structures
+                        vehicle_text = ''
+                        years = []
+                        
+                        # Check if this is a table row (tr)
+                        if row_soup.name == 'tr' or row_soup.find('tr'):
+                            # Table structure: extract from table cells (td)
+                            tds = row_soup.find_all('td')
+                            if len(tds) >= 2:
+                                # First cell typically has vehicle description, second has years
+                                vehicle_text = tds[0].get_text(strip=True)
+                                years_cell = tds[1]
+                                # Extract years from links or text
+                                year_links = years_cell.find_all('a', href=True)
+                                for link in year_links:
+                                    href = link.get('href', '')
+                                    year_match = re.search(r'/p/Jaguar_(\d{4})', href)
+                                    if year_match:
+                                        years.append(year_match.group(1))
+                                    else:
+                                        link_text = link.get_text(strip=True)
+                                        if link_text and link_text.isdigit() and len(link_text) == 4:
+                                            years.append(link_text)
+                                if not years:
+                                    years_text = years_cell.get_text(strip=True)
+                                    year_matches = re.findall(r'\b(\d{4})\b', years_text)
+                                    years = [y for y in year_matches if 1900 <= int(y) <= 2100]
+                        else:
+                            # Div structure: use whatThisFitsFitment and whatThisFitsYears
+                            fitment_div = row_soup.find('div', class_=lambda x: x and ('whatThisFitsFitment' in str(x) if x else False))
+                            if not fitment_div:
+                                # Try finding by any div with the class
+                                fitment_div = row_soup.find('div', class_=re.compile(r'whatThisFitsFitment', re.I))
                             
-                            make = ''
-                            model_without_year = re.sub(r'\s*\(\d{4}-\d{4}\)', '', model).strip()
-                            model_words = model_without_year.split()
-                            if len(model_words) >= 1:
-                                make = model_words[0]
+                            if not fitment_div:
+                                continue
                             
-                            if model:
+                            vehicle_span = fitment_div.find('span')
+                            if not vehicle_span:
+                                continue
+                            
+                            vehicle_text = vehicle_span.get_text(strip=True)
+                            if not vehicle_text:
+                                continue
+                            
+                            # Find years using Selenium directly from the row element (more reliable)
+                            try:
+                                years_div_element = row_element.find_element(By.CSS_SELECTOR, 'div.whatThisFitsYears')
+                                year_links = years_div_element.find_elements(By.TAG_NAME, 'a')
+                                
+                                for link in year_links:
+                                    href = link.get_attribute('href') or ''
+                                    year_match = re.search(r'/p/Jaguar_(\d{4})', href)
+                                    if year_match:
+                                        years.append(year_match.group(1))
+                                    else:
+                                        # Try text content
+                                        link_text = link.text.strip()
+                                        if link_text and link_text.isdigit() and len(link_text) == 4:
+                                            years.append(link_text)
+                                
+                                # If no links, try text content
+                                if not years:
+                                    years_text = years_div_element.text
+                                    year_matches = re.findall(r'\b(\d{4})\b', years_text)
+                                    years = [y for y in year_matches if 1900 <= int(y) <= 2100]
+                            except Exception as year_error:
+                                # Fallback: try finding years div in BeautifulSoup
+                                try:
+                                    years_div = row_soup.find('div', class_=lambda x: x and ('whatThisFitsYears' in str(x) if x else False))
+                                    if not years_div:
+                                        years_div = row_soup.find('div', class_=re.compile(r'whatThisFitsYears', re.I))
+                                    
+                                    if years_div:
+                                        year_links = years_div.find_all('a', href=True)
+                                        for link in year_links:
+                                            href = link.get('href', '')
+                                            year_match = re.search(r'/p/Jaguar_(\d{4})', href)
+                                            if year_match:
+                                                years.append(year_match.group(1))
+                                            else:
+                                                link_text = link.get_text(strip=True)
+                                                if link_text and link_text.isdigit() and len(link_text) == 4:
+                                                    years.append(link_text)
+                                        if not years:
+                                            years_text = years_div.get_text(strip=True)
+                                            year_matches = re.findall(r'\b(\d{4})\b', years_text)
+                                            years = [y for y in year_matches if 1900 <= int(y) <= 2100]
+                                except Exception as fallback_error:
+                                    self.logger.debug(f"Error extracting years (both methods): {str(fallback_error)}")
+                        
+                        if not vehicle_text:
+                            continue
+                        
+                        # Parse vehicle_text
+                        make = 'Jaguar'
+                        parse_text = vehicle_text
+                        if parse_text.startswith('Jaguar '):
+                            parse_text = parse_text[7:].strip()
+                        
+                        words = parse_text.split()
+                        model = words[0] if words else ''
+                        
+                        engine = ''
+                        trim = ''
+                        
+                        # Attempt to extract engine and trim more robustly
+                        engine_match = re.search(r'(\d+\.?\d*L\s*(?:V\d|I\d)?(?:\s*MILD HYBRID EV-GAS \(MHEV\))?(?:\s*EV-GAS \(MHEV\))?(?:\s*GAS)?(?:\s*ELECTRIC)?(?:\s*A/T|\s*M/T|\s*CVT|\s*AUTO|\s*MANUAL)?)', parse_text, re.IGNORECASE)
+                        if engine_match:
+                            engine = engine_match.group(1).strip()
+                            # Remove engine part from parse_text to isolate trim
+                            trim_start_index = parse_text.find(engine) + len(engine)
+                            trim = parse_text[trim_start_index:].strip()
+                            # Remove model from trim if it's still there
+                            if trim.startswith(model):
+                                trim = trim[len(model):].strip()
+                        else:
+                            # If no engine found, assume rest is trim after model
+                            if len(words) > 1:
+                                trim = ' '.join(words[1:]).strip()
+                        
+                        if years:
+                            for year in years:
                                 product_data['fitments'].append({
                                     'year': year,
                                     'make': make,
                                     'model': model,
-                                    'trim': '',
+                                    'trim': trim,
                                     'engine': engine
                                 })
+                            self.logger.info(f"🚗 Row {idx+1}: Found {len(years)} fitment(s): {model} ({', '.join(years)})")
+                        else:
+                            product_data['fitments'].append({
+                                'year': '', 'make': make, 'model': model, 'trim': trim, 'engine': engine
+                            })
+                            self.logger.info(f"🚗 Row {idx+1}: Found 1 fitment (no year): {model}")
+                    except Exception as row_parse_error:
+                        self.logger.warning(f"⚠️ Error parsing fitment row {idx+1} via Selenium: {str(row_parse_error)}")
+                        self.logger.debug(traceback.format_exc())
+            else:
+                self.logger.warning("⚠️ No fitment rows found for processing, even after dynamic interaction attempts.")
             
+            # If no fitments found, still return the product with empty fitment
             if not product_data['fitments']:
+                self.logger.warning(f"⚠️ No fitment data found for {product_data['title']}")
                 product_data['fitments'].append({
                     'year': '',
                     'make': '',
