@@ -38,23 +38,23 @@ class FordScraper(BaseScraperWithExtension):
         return product_urls
     
     def _search_for_wheels(self):
-        """Search for wheels using site search"""
+        """Search for wheels using site search - single page with 250 results, no pagination"""
         product_urls = []
         
         try:
             if not self.driver:
                 self.ensure_driver()
             
-            search_url = f"{self.base_url}/search?q=wheel"
+            # Search URL with numResults=250 to get all products on one page (no pagination)
+            search_url = f"{self.base_url}/productSearch.aspx?ukey_make=0&modelYear=0&ukey_model=0&ukey_trimLevel=0&ukey_driveline=0&ukey_Category=0&numResults=250&sortOrder=Relevance&ukey_tag=0&isOnSale=0&isAccessory=0&isPerformance=0&showAllModels=1&searchTerm=wheel"
             self.logger.info(f"Searching: {search_url}")
             
             original_timeout = self.page_load_timeout
             try:
                 self.page_load_timeout = 60
                 self.driver.set_page_load_timeout(60)
-                html = self.get_page(search_url, use_selenium=True, wait_time=2)
-                if not html:
-                    return product_urls
+                self.driver.get(search_url)
+                time.sleep(3)
             except Exception as e:
                 self.logger.error(f"Error loading search page: {str(e)}")
                 return product_urls
@@ -65,207 +65,141 @@ class FordScraper(BaseScraperWithExtension):
                 except:
                     pass
             
+            # Wait for product links to appear using Selenium
             try:
-                WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/product/'], a[href*='/parts/'], a[href*='/oem-parts/']"))
+                WebDriverWait(self.driver, 20).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/p/']"))
                 )
-            except:
-                pass
+                self.logger.info("Product links detected on page")
+            except TimeoutException:
+                self.logger.warning("Product links not found immediately, continuing anyway...")
             
+            # Scroll to load all products (lazy loading)
             self._scroll_to_load_content()
+            
+            # Wait a bit more for any dynamic content
+            time.sleep(3)
+            
+            # Try to find product links using Selenium first (more reliable for dynamic content)
+            try:
+                # Try multiple patterns for Ford product URLs
+                selenium_selectors = [
+                    "a[href*='/p/Ford__/']",
+                    "a[href*='/p/Ford/']",
+                    "a[href*='/p/']",
+                ]
+                
+                selenium_links = []
+                for selector in selenium_selectors:
+                    try:
+                        links = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                        if links:
+                            selenium_links = links
+                            self.logger.info(f"Found {len(selenium_links)} product links via Selenium using selector: {selector}")
+                            break
+                    except:
+                        continue
+                
+                for link_elem in selenium_links:
+                    try:
+                        href = link_elem.get_attribute('href')
+                        if href:
+                            # Normalize URL
+                            full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                            
+                            # Remove query parameters and fragments
+                            if '?' in full_url:
+                                full_url = full_url.split('?')[0]
+                            if '#' in full_url:
+                                full_url = full_url.split('#')[0]
+                            full_url = full_url.rstrip('/')
+                            
+                            # Only collect individual product pages (SimplePart pattern: /p/Ford__/Product-Name/ID/PartNumber.html)
+                            if '/p/' in full_url and full_url.endswith('.html'):
+                                if full_url not in product_urls:
+                                    product_urls.append(full_url)
+                    except Exception as e:
+                        self.logger.debug(f"Error extracting link from Selenium element: {str(e)}")
+                        continue
+            except Exception as e:
+                self.logger.debug(f"Error finding links via Selenium: {str(e)}")
+            
+            # Also try BeautifulSoup parsing as fallback
             html = self.driver.page_source
             soup = BeautifulSoup(html, 'lxml')
             
-            product_links = (soup.find_all('a', href=re.compile(r'/product/')) +
-                           soup.find_all('a', href=re.compile(r'/parts/')) +
-                           soup.find_all('a', href=re.compile(r'/oem-parts/')))
+            # Try multiple patterns to find product links (SimplePart platform)
+            # Pattern 1: /p/Ford__/Product-Name/ID/PartNumber.html
+            product_links = soup.find_all('a', href=re.compile(r'/p/Ford__/', re.I))
             
+            # Pattern 2: /p/Ford/Product-Name/ID/PartNumber.html (alternative)
+            if not product_links:
+                product_links = soup.find_all('a', href=re.compile(r'/p/Ford/', re.I))
+            
+            # Pattern 3: Try looking in product containers/rows
+            if not product_links:
+                product_containers = soup.find_all(['div', 'li', 'tr'], class_=re.compile(r'product|item|part|row', re.I))
+                for container in product_containers:
+                    container_links = container.find_all('a', href=re.compile(r'/p/', re.I))
+                    product_links.extend(container_links)
+            
+            # Pattern 4: Look for any link with /p/ pattern ending in .html
+            if not product_links:
+                all_links = soup.find_all('a', href=True)
+                for link in all_links:
+                    href = link.get('href', '')
+                    if href and '/p/' in href.lower() and href.lower().endswith('.html'):
+                        product_links.append(link)
+            
+            # Extract URLs from BeautifulSoup links
             for link in product_links:
                 href = link.get('href', '')
                 if href:
                     full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                    # Remove query params and fragments
                     if '?' in full_url:
                         full_url = full_url.split('?')[0]
                     if '#' in full_url:
                         full_url = full_url.split('#')[0]
                     full_url = full_url.rstrip('/')
-                    if full_url not in product_urls:
-                        product_urls.append(full_url)
+                    
+                    # Only collect individual product pages
+                    if '/p/' in full_url and full_url.endswith('.html'):
+                        if full_url not in product_urls:
+                            product_urls.append(full_url)
             
-            self.logger.info(f"Initial page: Found {len(product_links)} product links, {len(product_urls)} unique URLs")
-            
-            # Handle pagination - iterate through all pages
-            # Strategy: Use direct URL construction since we know the search URL pattern
-            page_num = 2
-            max_pages = 2000  # Safety limit
-            consecutive_empty_pages = 0
-            max_consecutive_empty = 4  # Stop after 4 consecutive pages with no new products
-            
-            while page_num <= max_pages:
+            # Pattern 5: Use JavaScript to find all links (most comprehensive fallback)
+            if not product_urls:
                 try:
-                    self.logger.info(f"Loading page {page_num}...")
-                    
-                    # Try multiple pagination URL patterns
-                    pagination_urls = [
-                        f"{self.base_url}/search?q=wheel&page={page_num}",
-                        f"{self.base_url}/search?q=wheel&p={page_num}",
-                        f"{self.base_url}/search?q=wheel&pageNumber={page_num}",
-                        f"{self.base_url}/search?search_str=wheel&page={page_num}",
-                        f"{self.base_url}/search/wheel?page={page_num}",
-                    ]
-                    
-                    page_loaded = False
-                    pag_url_used = None
-                    
-                    for pag_url in pagination_urls:
-                        try:
-                            self.logger.debug(f"Trying pagination URL: {pag_url}")
-                            
-                            # Increase timeout for pagination pages
-                            original_pag_timeout = self.page_load_timeout
-                            try:
-                                self.page_load_timeout = 60
-                                self.driver.set_page_load_timeout(60)
-                                
-                                # Load the page directly
-                                self.driver.get(pag_url)
-                                time.sleep(2)  # Wait for page to load
-                                
-                                # Wait for product links to appear
-                                try:
-                                    WebDriverWait(self.driver, 10).until(
-                                        EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/product/'], a[href*='/parts/'], a[href*='/oem-parts/']"))
-                                    )
-                                except:
-                                    self.logger.debug(f"Product links not found immediately on {pag_url}, continuing...")
-                                
-                                # Check if page loaded successfully (has product links)
-                                page_links_check = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='/product/'], a[href*='/parts/'], a[href*='/oem-parts/']")
-                                if len(page_links_check) > 0:
-                                    # Page loaded successfully
-                                    page_loaded = True
-                                    pag_url_used = pag_url
-                                    self.logger.info(f"✓ Successfully loaded page {page_num} using URL: {pag_url}")
-                                    break
-                            except Exception as pag_error:
-                                error_str = str(pag_error).lower()
-                                if 'timeout' in error_str:
-                                    self.logger.debug(f"Timeout loading {pag_url}, trying next pattern...")
-                                continue
-                            finally:
-                                # Restore timeout
-                                try:
-                                    self.page_load_timeout = original_pag_timeout
-                                    self.driver.set_page_load_timeout(original_pag_timeout)
-                                except:
-                                    pass
-                        except Exception as pag_error:
-                            continue
-                    
-                    if not page_loaded:
-                        self.logger.warning(f"Could not load page {page_num} with any URL pattern")
-                        consecutive_empty_pages += 1
-                        if consecutive_empty_pages >= max_consecutive_empty:
-                            self.logger.info(f"Stopping pagination: {consecutive_empty_pages} consecutive pages failed to load")
-                            break
-                        page_num += 1
-                        continue
-                    
-                    # Scroll to load all products on this page
-                    try:
-                        last_height = self.driver.execute_script("return document.body.scrollHeight")
-                        scroll_attempts = 0
-                        no_change_count = 0
-                        
-                        while scroll_attempts < 30:  # Limit per page
-                            try:
-                                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                                time.sleep(1)
-                                new_height = self.driver.execute_script("return document.body.scrollHeight")
-                                
-                                if new_height == last_height:
-                                    no_change_count += 1
-                                    if no_change_count >= 3:
-                                        break
-                                else:
-                                    no_change_count = 0
-                                last_height = new_height
-                                scroll_attempts += 1
-                            except Exception as scroll_error:
-                                self.logger.warning(f"Error during pagination scroll: {str(scroll_error)}")
-                                break
-                    except Exception as scroll_init_error:
-                        self.logger.warning(f"Error initializing pagination scroll: {str(scroll_init_error)}")
-                    
-                    # Extract product links from this page - with timeout protection
-                    try:
-                        html = self.driver.page_source
-                    except Exception as page_source_error:
-                        self.logger.warning(f"Error accessing page_source on page {page_num}: {str(page_source_error)}")
-                        # Try to get HTML via get_page() as fallback
-                        html = self.get_page(pag_url_used, use_selenium=True, wait_time=1)
-                        if not html:
-                            self.logger.warning(f"Could not retrieve page source for page {page_num}, skipping")
-                            page_num += 1
-                            continue
-                    
-                    soup = BeautifulSoup(html, 'lxml')
-                    page_links = (soup.find_all('a', href=re.compile(r'/product/')) +
-                                 soup.find_all('a', href=re.compile(r'/parts/')) +
-                                 soup.find_all('a', href=re.compile(r'/oem-parts/')))
-                    
-                    page_urls_count = 0
-                    for link in page_links:
-                        href = link.get('href', '')
-                        if href:
-                            # Normalize URL: extract base product URL (remove query params that change per page)
-                            full_url = href if href.startswith('http') else f"{self.base_url}{href}"
-                            
-                            # Remove fragment (#)
+                    js_links = self.driver.execute_script("""
+                        var links = [];
+                        var allLinks = document.querySelectorAll('a[href]');
+                        for (var i = 0; i < allLinks.length; i++) {
+                            var href = allLinks[i].href || allLinks[i].getAttribute('href');
+                            if (href && href.toLowerCase().indexOf('/p/') !== -1 && href.toLowerCase().endsWith('.html')) {
+                                links.push(href);
+                            }
+                        }
+                        return links;
+                    """)
+                    self.logger.info(f"Found {len(js_links)} product links via JavaScript")
+                    for js_link in js_links:
+                        if js_link and js_link not in product_urls:
+                            # Normalize URL
+                            full_url = js_link if js_link.startswith('http') else f"{self.base_url}{js_link}"
+                            if '?' in full_url:
+                                full_url = full_url.split('?')[0]
                             if '#' in full_url:
                                 full_url = full_url.split('#')[0]
-                            
-                            # IMPORTANT: Extract only the base product URL, remove page-specific query params
-                            # This ensures we get unique products across pages
-                            if any(pattern in full_url for pattern in ['/product/', '/parts/', '/oem-parts/']):
-                                # Extract just the product path, remove all query params
-                                if '?' in full_url:
-                                    full_url = full_url.split('?')[0]
-                            
-                            # Normalize trailing slashes
                             full_url = full_url.rstrip('/')
-                            
-                            if full_url not in product_urls:
+                            if '/p/' in full_url and full_url.endswith('.html'):
                                 product_urls.append(full_url)
-                                page_urls_count += 1
-                    
-                    self.logger.info(f"Page {page_num}: Found {len(page_links)} product links, {page_urls_count} new unique URLs (Total: {len(product_urls)})")
-                    
-                    # If no new products found, increment empty counter
-                    if page_urls_count == 0:
-                        consecutive_empty_pages += 1
-                        self.logger.warning(f"No new products on page {page_num} (consecutive empty: {consecutive_empty_pages})")
-                        if consecutive_empty_pages >= max_consecutive_empty:
-                            self.logger.info(f"Stopping pagination: {consecutive_empty_pages} consecutive pages with no new products")
-                            break
-                    else:
-                        consecutive_empty_pages = 0  # Reset counter if we found new products
-                    
-                    page_num += 1
-                    
-                    # Add delay between pages to avoid being blocked
-                    time.sleep(random.uniform(2, 4))
-                    
-                except Exception as e:
-                    self.logger.error(f"Error processing page {page_num}: {str(e)}")
-                    consecutive_empty_pages += 1
-                    if consecutive_empty_pages >= max_consecutive_empty:
-                        self.logger.warning(f"Stopping pagination due to errors")
-                        break
-                    page_num += 1
-                    continue
+                except Exception as js_error:
+                    self.logger.debug(f"Error finding links via JavaScript: {str(js_error)}")
             
-            self.logger.info(f"Pagination complete. Total unique product URLs found: {len(product_urls)}")
+            self.logger.info(f"Found {len(product_urls)} unique product URLs on search page")
+            
+            # No pagination - all results are on a single page
             
         except Exception as e:
             self.logger.error(f"Error searching for wheels: {str(e)}")
@@ -601,78 +535,326 @@ class FordScraper(BaseScraperWithExtension):
                 if value_elem:
                     product_data['replaces'] = value_elem.get_text(strip=True)
             
-            # Extract fitment data from JSON script tag
-            # Priority: script with id="product_data" and type="application/json"
-            script_elem = soup.find('script', {'type': 'application/json', 'id': 'product_data'})
-            if not script_elem:
-                # Try just id="product_data"
-                script_elem = soup.find('script', id='product_data')
-            if not script_elem:
-                # Try alternative script tags with type="application/json"
-                script_tags = soup.find_all('script', type='application/json')
-                for tag in script_tags:
-                    if tag.string and ('fitment' in tag.string.lower() or 'vehicle' in tag.string.lower()):
-                        script_elem = tag
-                        break
+            # Extract fitment - Need to click "What This Fits" tab and "Show More" button to load all fitment data
+            # Steps:
+            # 1. Click the "What This Fits" tab
+            # 2. Wait for tab panel to load
+            # 3. Click "Show More" button
+            # 4. Wait for all fitment data to load
+            # 5. Extract fitment data from updated HTML
             
-            if script_elem and script_elem.string:
+            fitment_rows_elements = []  # Initialize to store Selenium WebElement objects
+            selenium_extraction_success = False
+            
+            if self.driver:
                 try:
-                    product_json = json.loads(script_elem.string)
+                    self.logger.info("🔍 Clicking 'What This Fits' tab to load fitment data...")
                     
-                    # Try multiple possible keys for fitment data
-                    fitments = product_json.get('fitment', [])
-                    if not fitments:
-                        fitments = product_json.get('fitments', [])
-                    if not fitments:
-                        fitments = product_json.get('vehicles', [])
-                    if not fitments and isinstance(product_json, dict):
-                        # Sometimes fitment is nested
-                        for key in ['product', 'data', 'details']:
-                            if key in product_json and isinstance(product_json[key], dict):
-                                fitments = product_json[key].get('fitment', []) or product_json[key].get('fitments', [])
-                                if fitments:
-                                    break
+                    # Step 1: Find and click the "What This Fits" tab
+                    wait = WebDriverWait(self.driver, 10)
+                    tab_selectors = [
+                        (By.ID, 'WhatThisFitsTabComponent_TAB'),
+                        (By.CSS_SELECTOR, 'a[href="#WhatThisFitsTabComponent"]'),
+                        (By.CSS_SELECTOR, 'li#WhatThisFitsTabComponent a'),
+                        (By.XPATH, '//a[contains(text(), "What This Fits")]'),
+                    ]
                     
-                    for fitment in fitments:
+                    tab_clicked = False
+                    for selector_type, selector_value in tab_selectors:
                         try:
-                            year = str(fitment.get('year', '')).strip()
-                            make = fitment.get('make', '').strip()
-                            model = fitment.get('model', '').strip()
-                            trims = fitment.get('trims', [])
-                            engines = fitment.get('engines', [])
-                            
-                            # Handle case where trim/engine might be single values
-                            if not isinstance(trims, list):
-                                trims = [trims] if trims else ['']
-                            if not isinstance(engines, list):
-                                engines = [engines] if engines else ['']
-                            
-                            # Create a row for each trim/engine combination
-                            if not trims:
-                                trims = ['']
-                            if not engines:
-                                engines = ['']
-                            
-                            for trim in trims:
-                                for engine in engines:
-                                    product_data['fitments'].append({
-                                        'year': year,
-                                        'make': make,
-                                        'model': model,
-                                        'trim': str(trim).strip() if trim else '',
-                                        'engine': str(engine).strip() if engine else ''
-                                    })
-                        except Exception as fitment_error:
-                            self.logger.debug(f"Error processing fitment: {str(fitment_error)}")
+                            tab_element = wait.until(EC.element_to_be_clickable((selector_type, selector_value)))
+                            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", tab_element)
+                            time.sleep(0.5)
+                            tab_element.click()
+                            tab_clicked = True
+                            self.logger.info("✓ Clicked 'What This Fits' tab")
+                            break
+                        except Exception as e:
+                            self.logger.debug(f"Attempt to click tab with {selector_type}={selector_value} failed: {e}")
                             continue
                     
-                    if product_data['fitments']:
-                        self.logger.info(f"✅ Extracted {len(product_data['fitments'])} fitment combinations")
-                    
-                except json.JSONDecodeError as e:
-                    self.logger.warning(f"Error parsing JSON: {str(e)}")
+                    if not tab_clicked:
+                        self.logger.warning("⚠️ Could not find or click 'What This Fits' tab")
+                    else:
+                        # Step 2: Wait for tab panel to be visible and loaded
+                        time.sleep(1)  # Initial wait for tab panel to appear
+                        
+                        # Wait for tab panel to be visible - try multiple IDs/selectors
+                        tab_panel_found = False
+                        tab_panel_selectors = [
+                            (By.ID, 'WhatThisFitsTabComponent_TABPANEL'),
+                            (By.CSS_SELECTOR, 'div[role="tabpanel"]'),
+                            (By.CSS_SELECTOR, 'div.tab-pane.active'),
+                            (By.CSS_SELECTOR, 'div[id*="WhatThisFits"]'),
+                            (By.CSS_SELECTOR, 'div[id*="TabPanel"]'),
+                        ]
+                        
+                        for selector_type, selector_value in tab_panel_selectors:
+                            try:
+                                tab_panel = wait.until(EC.presence_of_element_located((selector_type, selector_value)))
+                                time.sleep(1)  # Wait a bit more for content to render
+                                self.logger.info(f"✓ Tab panel loaded (found via: {selector_value})")
+                                tab_panel_found = True
+                                break
+                            except Exception as e:
+                                continue
+                        
+                        if not tab_panel_found:
+                            self.logger.warning("⚠️ Tab panel not found with standard selectors, but continuing anyway...")
+                        
+                        # Step 3: Click "Show More" button if present
+                        show_more_button_selectors = [
+                            (By.CSS_SELECTOR, 'button.showMoreBtnLink'),
+                            (By.CSS_SELECTOR, 'button.btn-link.showMoreBtnLink'),
+                            (By.XPATH, '//button[contains(text(), "Show More")]'),
+                            (By.XPATH, '//button[contains(@class, "showMore")]'),
+                        ]
+                        show_more_clicked = False
+                        try:
+                            for selector_type, selector_value in show_more_button_selectors:
+                                try:
+                                    show_more_button = wait.until(EC.element_to_be_clickable((selector_type, selector_value)))
+                                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", show_more_button)
+                                    time.sleep(0.5)
+                                    show_more_button.click()
+                                    show_more_clicked = True
+                                    self.logger.info("✓ Clicked 'Show More' button")
+                                    break
+                                except Exception as e:
+                                    continue
+                            
+                            if not show_more_clicked:
+                                self.logger.warning("⚠️ Could not find or click 'Show More' button (may not be present)")
+                            
+                            # Step 4: Wait for all fitment data to load
+                            # Wait longer for dynamic content to load
+                            time.sleep(2)
+                            
+                            # Wait for fitment rows to appear - try multiple selectors
+                            fitment_loaded = False
+                            fitment_selectors = [
+                                'div.whatThisFitsFitment',
+                                'div.whatThisFitsFitment span',
+                                'div.col-lg-12 .whatThisFitsFitment',
+                                'div#WhatThisFitsTabComponent_TABPANEL div.col-lg-12',
+                                'div.whatThisFitsYears',
+                                'div[class*="whatThisFits"]',
+                                'div.col-lg-12:has(div[class*="whatThisFits"])',
+                            ]
+                            
+                            for selector in fitment_selectors:
+                                try:
+                                    # Use longer timeout for dynamic content
+                                    extended_wait = WebDriverWait(self.driver, 15)
+                                    extended_wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
+                                    fitment_loaded = True
+                                    self.logger.info(f"✓ Fitment data loaded (found via: {selector})")
+                                    break
+                                except Exception as e:
+                                    continue
+                            
+                            if not fitment_loaded:
+                                # Try waiting for any content in the tab panel
+                                try:
+                                    extended_wait = WebDriverWait(self.driver, 10)
+                                    extended_wait.until(lambda driver: len(driver.find_elements(By.CSS_SELECTOR, 'div#WhatThisFitsTabComponent_TABPANEL div.col-lg-12')) > 0)
+                                    fitment_loaded = True
+                                    self.logger.info("✓ Fitment data loaded (found via row count check)")
+                                except Exception as e:
+                                    # Try JavaScript check as fallback
+                                    try:
+                                        row_count = self.driver.execute_script(
+                                            "return document.querySelectorAll('div#WhatThisFitsTabComponent_TABPANEL div.col-lg-12, div.whatThisFitsFitment, div[class*=\"whatThisFits\"]').length;"
+                                        )
+                                        if row_count > 0:
+                                            fitment_loaded = True
+                                            self.logger.info(f"✓ Fitment data loaded (found {row_count} rows via JavaScript)")
+                                        else:
+                                            self.logger.warning(f"⚠️ Fitment rows not found via JavaScript (count: {row_count}), but continuing anyway")
+                                    except Exception as js_error:
+                                        self.logger.warning(f"⚠️ Fitment rows check failed, but continuing anyway: {str(js_error)}")
+                            
+                            # Additional wait for all content to fully render
+                            time.sleep(2)
+                            
+                            # Final check: verify elements exist before extraction - try multiple selectors
+                            try:
+                                final_check = self.driver.execute_script(
+                                    "return document.querySelectorAll('div.whatThisFitsFitment, div#WhatThisFitsTabComponent_TABPANEL div.col-lg-12, div[class*=\"whatThisFits\"]').length;"
+                                )
+                                if final_check > 0:
+                                    self.logger.info(f"✓ Verified {final_check} fitment elements exist before extraction")
+                                else:
+                                    self.logger.warning(f"⚠️ No fitment elements found in final check (count: {final_check})")
+                            except Exception as e:
+                                self.logger.debug(f"Final check error (non-critical): {str(e)}")
+                        
+                        except Exception as e:
+                            self.logger.warning(f"⚠️ Error clicking 'Show More': {str(e)}")
+                        
+                        # Step 5: Extract fitment data directly using Selenium (more reliable for dynamic content)
+                        # Use Selenium to find elements directly instead of BeautifulSoup
+                        try:
+                            # Find all fitment rows using Selenium - try multiple selectors
+                            fitment_row_elements = self.driver.find_elements(By.CSS_SELECTOR, 'div#WhatThisFitsTabComponent_TABPANEL div.col-lg-12')
+                            
+                            if not fitment_row_elements:
+                                # Try alternative selector
+                                fitment_row_elements = self.driver.find_elements(By.CSS_SELECTOR, 'div.whatThisFitsFitment')
+                            
+                            if not fitment_row_elements:
+                                # Try finding by class pattern
+                                fitment_row_elements = self.driver.find_elements(By.CSS_SELECTOR, 'div[class*="whatThisFits"]')
+                            
+                            if not fitment_row_elements:
+                                # Try finding any div.col-lg-12 that might contain fitment data
+                                all_cols = self.driver.find_elements(By.CSS_SELECTOR, 'div.col-lg-12')
+                                fitment_row_elements = []
+                                for col in all_cols:
+                                    try:
+                                        col_html = col.get_attribute('outerHTML') or ''
+                                        if 'whatThisFits' in col_html.lower() or 'fitment' in col_html.lower():
+                                            fitment_row_elements.append(col)
+                                    except:
+                                        continue
+                            
+                            if fitment_row_elements:
+                                self.logger.info(f"✓ Found {len(fitment_row_elements)} fitment rows via Selenium")
+                                fitment_rows_elements = fitment_row_elements
+                                selenium_extraction_success = True
+                            else:
+                                self.logger.warning("⚠️ No fitment rows found via Selenium selectors")
+                        
+                        except Exception as selenium_error:
+                            self.logger.warning(f"⚠️ Error extracting fitment via Selenium: {str(selenium_error)}")
+                            selenium_extraction_success = False
+                
                 except Exception as e:
-                    self.logger.warning(f"Error extracting fitments: {str(e)}")
+                    self.logger.warning(f"⚠️ Error interacting with fitment tab: {str(e)}")
+            
+            # Extract fitment data from updated HTML (or fallback to initial HTML if Selenium failed)
+            if selenium_extraction_success and fitment_rows_elements:
+                self.logger.info(f"🔍 Processing {len(fitment_rows_elements)} fitment rows from Selenium WebElements...")
+                for idx, row_element in enumerate(fitment_rows_elements):
+                    try:
+                        # Get outerHTML of the WebElement and parse with BeautifulSoup
+                        row_html = row_element.get_attribute('outerHTML')
+                        if not row_html:
+                            continue
+                        
+                        row_soup = BeautifulSoup(row_html, 'lxml')
+                        
+                        # Find the vehicle description span
+                        fitment_div = row_soup.find('div', class_=lambda x: x and ('whatThisFitsFitment' in str(x) if x else False))
+                        if not fitment_div:
+                            # Try finding by any div with the class
+                            fitment_div = row_soup.find('div', class_=re.compile(r'whatThisFitsFitment', re.I))
+                        
+                        if not fitment_div:
+                            continue
+                        
+                        vehicle_span = fitment_div.find('span')
+                        if not vehicle_span:
+                            continue
+                        
+                        vehicle_text = vehicle_span.get_text(strip=True)
+                        if not vehicle_text:
+                            continue
+                        
+                        # Parse vehicle_text
+                        make = 'Ford'
+                        parse_text = vehicle_text
+                        if parse_text.startswith('Ford '):
+                            parse_text = parse_text[5:].strip()
+                        
+                        words = parse_text.split()
+                        model = words[0] if words else ''
+                        
+                        engine = ''
+                        trim = ''
+                        
+                        # Attempt to extract engine and trim more robustly
+                        engine_match = re.search(r'(\d+\.?\d*L\s*(?:V\d|I\d)?(?:\s*MILD HYBRID EV-GAS \(MHEV\))?(?:\s*EV-GAS \(MHEV\))?(?:\s*GAS)?(?:\s*ELECTRIC)?(?:\s*A/T|\s*M/T|\s*CVT|\s*AUTO|\s*MANUAL)?)', parse_text, re.IGNORECASE)
+                        if engine_match:
+                            engine = engine_match.group(1).strip()
+                            # Remove engine part from parse_text to isolate trim
+                            trim_start_index = parse_text.find(engine) + len(engine)
+                            trim = parse_text[trim_start_index:].strip()
+                            # Remove model from trim if it's still there
+                            if trim.startswith(model):
+                                trim = trim[len(model):].strip()
+                        else:
+                            # If no engine found, assume rest is trim after model
+                            if len(words) > 1:
+                                trim = ' '.join(words[1:]).strip()
+                        
+                        # Find years using Selenium directly from the row element (more reliable)
+                        years = []
+                        try:
+                            years_div_element = row_element.find_element(By.CSS_SELECTOR, 'div.whatThisFitsYears')
+                            year_links = years_div_element.find_elements(By.TAG_NAME, 'a')
+                            
+                            for link in year_links:
+                                href = link.get_attribute('href') or ''
+                                year_match = re.search(r'/p/Ford_(\d{4})', href)
+                                if year_match:
+                                    years.append(year_match.group(1))
+                                else:
+                                    # Try text content
+                                    link_text = link.text.strip()
+                                    if link_text and link_text.isdigit() and len(link_text) == 4:
+                                        years.append(link_text)
+                            
+                            # If no links, try text content
+                            if not years:
+                                years_text = years_div_element.text
+                                year_matches = re.findall(r'\b(\d{4})\b', years_text)
+                                years = [y for y in year_matches if 1900 <= int(y) <= 2100]
+                        except Exception as year_error:
+                            # Fallback: try finding years div in BeautifulSoup
+                            try:
+                                years_div = row_soup.find('div', class_=lambda x: x and ('whatThisFitsYears' in str(x) if x else False))
+                                if not years_div:
+                                    years_div = row_soup.find('div', class_=re.compile(r'whatThisFitsYears', re.I))
+                                
+                                if years_div:
+                                    year_links = years_div.find_all('a', href=True)
+                                    for link in year_links:
+                                        href = link.get('href', '')
+                                        year_match = re.search(r'/p/Ford_(\d{4})', href)
+                                        if year_match:
+                                            years.append(year_match.group(1))
+                                        else:
+                                            link_text = link.get_text(strip=True)
+                                            if link_text and link_text.isdigit() and len(link_text) == 4:
+                                                years.append(link_text)
+                                    if not years:
+                                        years_text = years_div.get_text(strip=True)
+                                        year_matches = re.findall(r'\b(\d{4})\b', years_text)
+                                        years = [y for y in year_matches if 1900 <= int(y) <= 2100]
+                            except Exception as fallback_error:
+                                self.logger.debug(f"Error extracting years (both methods): {str(fallback_error)}")
+                        
+                        if years:
+                            for year in years:
+                                product_data['fitments'].append({
+                                    'year': year,
+                                    'make': make,
+                                    'model': model,
+                                    'trim': trim,
+                                    'engine': engine
+                                })
+                            self.logger.info(f"🚗 Row {idx+1}: Found {len(years)} fitment(s): {model} ({', '.join(years)})")
+                        else:
+                            product_data['fitments'].append({
+                                'year': '', 'make': make, 'model': model, 'trim': trim, 'engine': engine
+                            })
+                            self.logger.info(f"🚗 Row {idx+1}: Found 1 fitment (no year): {model}")
+                    except Exception as row_parse_error:
+                        self.logger.warning(f"⚠️ Error parsing fitment row {idx+1} via Selenium: {str(row_parse_error)}")
+                        self.logger.debug(traceback.format_exc())
+            else:
+                self.logger.warning("⚠️ No fitment rows found for processing, even after dynamic interaction attempts.")
             
             # If no fitments found, still return the product with empty fitment
             if not product_data['fitments']:
