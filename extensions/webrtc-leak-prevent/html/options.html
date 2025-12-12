@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>WebRTC Leak Prevent</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        padding: 1rem;
+      }
+      #content {
+        margin-bottom: 2rem;
+      }
+      label {
+        font-weight: bold;
+      }
+    </style>
+  </head>
+  <body>
+    <h3>WebRTC Leak Prevention Options</h3>
+
+    <div id="content">
+      <p>
+        <label for="policy">WebRTC IP handling policy:</label><br>
+        <select id="policy">
+          <option value="default_public_interface_only">Use the default public interface only</option>
+          <option value="default_public_and_private_interfaces">Use both public and private interfaces</option>
+          <option value="disable_non_proxied_udp">Disable non-proxied UDP (force proxy)</option>
+        </select>
+      </p>
+
+      <p>
+        <a href="https://github.com/a449707101729771095/WebRTC-Leak-Prevent/blob/master/DOCUMENTATION.md#what-do-the-settings-mean-and-do" target="_blank">
+          <em>What do these options mean?</em>
+        </a>
+      </p>
+    </div>
+
+    <div id="incognito">
+      <strong>Incognito protection:</strong>
+      <p id="incognitoAllowed" style="color:green;">Enabled</p>
+      <p id="incognitoDisallowed" style="color:red;">
+        Not enabled.
+        <a style="color:red;" href="https://github.com/a449707101729771095/WebRTC-Leak-Prevent/blob/master/DOCUMENTATION.md#what-is-incognito-protection" target="_blank">
+          <em>Learn more.</em>
+        </a>
+      </p>
+    </div>
+
+    <p style="color:grey; text-align: center; margin-top: 2rem;">
+      <a href="https://github.com/a449707101729771095/WebRTC-Leak-Prevent" target="_blank">GitHub source</a>
+    </p>
+
+    <script src="/js/options.js"></script>
+  </body>
+</html>

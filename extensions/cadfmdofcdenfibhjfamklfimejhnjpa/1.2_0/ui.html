@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="ui.css">
+</head>
+
+<body>
+  <div id="app">
+    <div id="header">
+      <div id="title">uBlock Origin for Chrome</div>
+      <div id="version">1.54.0</div>
+    </div>
+
+    <div id="main-section">
+      <div id="switch" title="Click to disable/enable blocking">
+        <div id="switch-btn">
+          <div class="power-icon">⏻</div>
+        </div>
+      </div>
+
+      <div id="stats">
+        <div class="stat-row">
+          <span class="stat-value" id="blocked-count">0</span>
+          <span class="stat-label">blocked on this page</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-value" id="domains-count">0</span>
+          <span class="stat-label">domains connected</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-value" id="total-blocked">0</span>
+          <span class="stat-label">blocked since install</span>
+        </div>
+      </div>
+    </div>
+
+    <div id="tools">
+      <div class="tool" id="zapper" title="Element Zapper">
+        <svg viewBox="0 0 24 24">
+          <path fill="currentColor" d="M13,2L3,14H12L11,22L21,10H12L13,2Z" />
+        </svg>
+      </div>
+      <div class="tool" id="picker" title="Element Picker">
+        <svg viewBox="0 0 24 24">
+          <path fill="currentColor"
+            d="M12,4.5C7,4.5 2.73,7.61 1,12C2.73,16.39 7,19.5 12,19.5C17,19.5 21.27,16.39 23,12C21.27,7.61 17,4.5 12,4.5M12,17A5,5 0 1,1 17,12A5,5 0 0,1 12,17M12,9A3,3 0 1,0 15,12A3,3 0 0,0 12,9Z" />
+        </svg>
+      </div>
+      <div class="tool" id="dashboard" title="Dashboard">
+        <svg viewBox="0 0 24 24">
+          <path fill="currentColor"
+            d="M3,13h2v-2H3V13z M3,17h2v-2H3V17z M3,9h2V7H3V9z M7,13h14v-2H7V13z M7,17h14v-2H7V17z M7,7v2h14V7H7z" />
+        </svg>
+      </div>
+    </div>
+  </div>
+  <script src="ui.js"></script>
+</body>
+
+</html>

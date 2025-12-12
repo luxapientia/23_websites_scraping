@@ -1,5 +1,5 @@
 """Scraper for usparts.volvocars.com (Volvo parts)"""
-from scrapers.base_scraper import BaseScraper
+from scrapers.base_scraper_with_extension import BaseScraperWithExtension
 from bs4 import BeautifulSoup
 import json
 import re
@@ -12,7 +12,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
-class VolvoScraper(BaseScraper):
+class VolvoScraper(BaseScraperWithExtension):
     """Scraper for usparts.volvocars.com"""
     
     def __init__(self):

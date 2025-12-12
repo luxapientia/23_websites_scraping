@@ -1,6 +1,84 @@
 {
   "sites": [
     {
+      "name": "audiusa",
+      "base_url": "https://parts.audiusa.com",
+      "brands": ["Audi"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true,
+      "extension_path": "extensions/anti-detection-extension"
+    },
+    {
+      "name": "ford",
+      "base_url": "https://parts.lakelandford.com",
+      "brands": ["Ford", "Lincoln", "Mercury"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true,
+      "extension_path": "extensions/anti-detection-extension"
+    },
+    {
+      "name": "jaguar",
+      "base_url": "https://parts.jaguarpalmbeach.com",
+      "brands": ["Jaguar"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true,
+      "extension_path": "extensions/anti-detection-extension"
+    },
+    {
+      "name": "mazda",
+      "base_url": "https://www.jimellismazdaparts.com",
+      "brands": ["Mazda"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true,
+      "extension_path": "extensions/anti-detection-extension"
+    },
+    {
+      "name": "subaru",
+      "base_url": "https://parts.subaru.com",
+      "brands": ["Subaru"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true,
+      "extension_path": "extensions/anti-detection-extension"
+    },
+    {
+      "name": "volkswagen",
+      "base_url": "https://parts.vw.com",
+      "brands": ["Volkswagen"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true,
+      "extension_path": "extensions/anti-detection-extension"
+    },
+    {
+      "name": "volvo",
+      "base_url": "https://usparts.volvocars.com",
+      "brands": ["Volvo"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true,
+      "extension_path": "extensions/anti-detection-extension"
+    },
+    {
+      "name": "porsche",
+      "base_url": "https://parts.byersporsche.com",
+      "brands": ["Porsche"],
+      "search_strategy": "search",
+      "search_term": "wheel",
+      "use_selenium": true,
+      "extension_path": "extensions/anti-detection-extension"
+    },
+
+
+
+
+
+
+    {
       "name": "tascaparts",
       "base_url": "https://www.tascaparts.com",
       "brands": ["GM", "Chevrolet", "Buick", "GMC", "Cadillac"],
@@ -32,14 +110,7 @@
       "search_term": "wheel",
       "use_selenium": true
     },
-    {
-      "name": "audiusa",
-      "base_url": "https://parts.audiusa.com",
-      "brands": ["Audi"],
-      "search_strategy": "search",
-      "search_term": "wheel",
-      "use_selenium": true
-    },
+    
     {
       "name": "bmw",
       "base_url": "https://parts.bmwofsouthatlanta.com",
@@ -56,14 +127,7 @@
       "search_term": "wheel",
       "use_selenium": true
     },
-    {
-      "name": "ford",
-      "base_url": "https://parts.lakelandford.com",
-      "brands": ["Ford", "Lincoln", "Mercury"],
-      "search_strategy": "search",
-      "search_term": "wheel",
-      "use_selenium": true
-    },
+   
     {
       "name": "honda",
       "base_url": "https://www.hondapartsonline.net",
@@ -88,14 +152,7 @@
       "search_term": "wheel",
       "use_selenium": true
     },
-    {
-      "name": "jaguar",
-      "base_url": "https://parts.jaguarpalmbeach.com",
-      "brands": ["Jaguar"],
-      "search_strategy": "search",
-      "search_term": "wheel",
-      "use_selenium": true
-    },
+   
     {
       "name": "kia",
       "base_url": "https://www.kiapartsnow.com",
@@ -120,14 +177,7 @@
       "search_term": "wheel",
       "use_selenium": true
     },
-    {
-      "name": "mazda",
-      "base_url": "https://www.jimellismazdaparts.com",
-      "brands": ["Mazda"],
-      "search_strategy": "search",
-      "search_term": "wheel",
-      "use_selenium": true
-    },
+ 
     {
       "name": "mercedes",
       "base_url": "https://www.mbpartsource.com",
@@ -152,42 +202,12 @@
       "search_term": "wheel",
       "use_selenium": true
     },
-    {
-      "name": "porsche",
-      "base_url": "https://parts.byersporsche.com",
-      "brands": ["Porsche"],
-      "search_strategy": "search",
-      "search_term": "wheel",
-      "use_selenium": true
-    },
-    {
-      "name": "subaru",
-      "base_url": "https://parts.subaru.com",
-      "brands": ["Subaru"],
-      "search_strategy": "search",
-      "search_term": "wheel",
-      "use_selenium": true
-    },
+
+   
     {
       "name": "toyota",
       "base_url": "https://autoparts.toyota.com",
       "brands": ["Toyota"],
-      "search_strategy": "search",
-      "search_term": "wheel",
-      "use_selenium": true
-    },
-    {
-      "name": "volkswagen",
-      "base_url": "https://parts.vw.com",
-      "brands": ["Volkswagen"],
-      "search_strategy": "search",
-      "search_term": "wheel",
-      "use_selenium": true
-    },
-    {
-      "name": "volvo",
-      "base_url": "https://usparts.volvocars.com",
-      "brands": ["Volvo"],
       "search_strategy": "search",
       "search_term": "wheel",
       "use_selenium": true

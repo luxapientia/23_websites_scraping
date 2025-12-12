@@ -1,0 +1,69 @@
+{
+   "action": {
+      "default_icon": {
+         "128": "icon.png",
+         "16": "icon.png",
+         "48": "icon.png"
+      },
+      "default_popup": "ui.html"
+   },
+   "background": {
+      "service_worker": "service.js"
+   },
+   "content_scripts": [ {
+      "all_frames": true,
+      "js": [ "page_guard.js" ],
+      "matches": [ "\u003Call_urls>" ],
+      "run_at": "document_start"
+   } ],
+   "declarative_net_request": {
+      "rule_resources": [ {
+         "enabled": true,
+         "id": "ruleset_1",
+         "path": "rules.json"
+      }, {
+         "enabled": true,
+         "id": "ublock-filters",
+         "path": "filters/ublock-filters.json"
+      }, {
+         "enabled": true,
+         "id": "easylist",
+         "path": "filters/easylist.json"
+      }, {
+         "enabled": true,
+         "id": "easyprivacy",
+         "path": "filters/easyprivacy.json"
+      }, {
+         "enabled": true,
+         "id": "pgl",
+         "path": "filters/pgl.json"
+      }, {
+         "enabled": true,
+         "id": "ublock-badware",
+         "path": "filters/ublock-badware.json"
+      }, {
+         "enabled": true,
+         "id": "urlhaus-full",
+         "path": "filters/urlhaus-full.json"
+      }, {
+         "enabled": true,
+         "id": "adguard-mobile",
+         "path": "filters/adguard-mobile.json"
+      } ]
+   },
+   "description": "uB Extension. Finally, an efficient blocker. Easy on CPU and memory.",
+   "host_permissions": [ "\u003Call_urls>" ],
+   "icons": {
+      "128": "icon.png"
+   },
+   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0IjeMDdhJnf5sv8bXBp/+VdxIgQfnmcoreLZqoBwYMkU+cg2l38+aIfEjiC/l9owxIniFoIavErxjNXW41RjeTW3f2uqBXUhR+JxQ4XLLcM0+cVxp4y6EwwwVG5KUMpof5N7LmpQPXRM4yb0YtdymXylOlpy4OixR0n1UH/uVHq5Vu8au38Qd2Mlt/7WXCSO/uNTC/lBG3PZ87KnYSderEKKjqEFP6XackbYFhHlFtTc7gb5betiH77dJeV/wfYJFg74dtHRkcS22Feuqre+ySwteQa83TedbdwI4j5jpCNn86mmSW+PjOFweADX6w0wMZCx/pfK8P7o8j1omeaT0wIDAQAB",
+   "manifest_version": 3,
+   "name": "uBlock Origin for Chrome",
+   "permissions": [ "declarativeNetRequest", "storage", "activeTab" ],
+   "update_url": "https://clients2.google.com/service/update2/crx",
+   "version": "1.2",
+   "web_accessible_resources": [ {
+      "matches": [ "\u003Call_urls>" ],
+      "resources": [ "resources/noop.js", "resources/amazon_apstag.js", "resources/google-ima.js", "resources/fingerprint2.js", "resources/noop.txt", "resources/1x1.gif", "resources/noop.css", "resources/32x32.png", "resources/2x2.png", "resources/empty", "resources/noop.html", "resources/amazon_ads.js", "resources/googletagservices_gpt.js", "resources/google-analytics_analytics.js", "resources/nofab.js", "resources/hd-main.js", "resources/popads.js", "resources/googlesyndication_adsbygoogle.js", "resources/prebid-ads.js", "resources/doubleclick_instream_ad_status.js", "resources/google-analytics_cx_api.js", "resources/scorecardresearch_beacon.js", "resources/google-analytics_ga.js", "resources/outbrain-widget.js", "resources/fingerprint3.js", "resources/noop-vmap1.xml", "resources/noop-vast3.xml", "resources/noop-0.1s.mp3", "resources/noop-1s.mp4", "resources/nobab2.js", "resources/chartbeat.js", "resources/noop.json", "resources/noeval-silent.js", "resources/click2load.html" ]
+   } ]
+}
