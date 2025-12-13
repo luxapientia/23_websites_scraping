@@ -260,6 +260,314 @@ class VolkswagenScraper(BaseScraperWithExtension):
         except:
             pass
     
+    def _wait_for_element_fully_loaded(self, selector, timeout=15, check_stable=True):
+        """Wait for element to be fully loaded and stable (no changes for 1 second)"""
+        wait = WebDriverWait(self.driver, timeout)
+        try:
+            element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
+            
+            if check_stable:
+                # Wait for element to be stable (no DOM changes)
+                stable_count = 0
+                last_html = element.get_attribute('outerHTML')
+                for _ in range(10):  # Check for up to 1 second
+                    time.sleep(0.1)
+                    current_html = element.get_attribute('outerHTML')
+                    if current_html == last_html:
+                        stable_count += 1
+                        if stable_count >= 3:  # Stable for 0.3 seconds
+                            break
+                    else:
+                        stable_count = 0
+                        last_html = current_html
+            
+            # Additional wait for any JavaScript to finish
+            time.sleep(0.5)
+            return element
+        except TimeoutException:
+            return None
+    
+    def _wait_for_tab_panel_loaded(self, timeout=30):
+        """
+        Wait for tab panel to be fully loaded after clicking tab.
+        Ensures ALL data is loaded, not just the panel container.
+        Returns True if panel is fully loaded, False otherwise.
+        """
+        if not self.driver:
+            return False
+        
+        wait = WebDriverWait(self.driver, timeout)
+        selectors = [
+            'div#fitments.tab-pane.active',
+            'div#ctl00_Content_PageBody_ProductTabsLegacy_UpdatePanel_applications',
+            'div[id*="fitment"][class*="active"]',
+            'div.tab-pane.active',
+            'div#WhatThisFitsTabComponent_TABPANEL',
+        ]
+        
+        for selector in selectors:
+            try:
+                # Step 1: Wait for panel element to be present and visible
+                element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
+                wait.until(EC.visibility_of(element))
+                
+                # Step 2: Wait for loading indicators to disappear
+                self.logger.debug("Waiting for loading indicators to disappear...")
+                for _ in range(20):  # Wait up to 4 seconds for loading to complete
+                    time.sleep(0.2)
+                    try:
+                        loading_indicators = self.driver.find_elements(By.CSS_SELECTOR, 
+                            'div.loading, div.spinner, div[class*="loading"], div[class*="spinner"], '
+                            'img[src*="loading"], img[src*="spinner"], .ajax-loader, .loading-overlay')
+                        visible_loading = [ind for ind in loading_indicators if ind.is_displayed()]
+                        if not visible_loading:
+                            break
+                    except:
+                        break
+                
+                # Step 3: Wait for content to be stable (not changing)
+                self.logger.debug("Waiting for content to stabilize...")
+                stable_count = 0
+                last_inner_html = ''
+                last_content_length = 0
+                
+                for check_round in range(15):  # Check for up to 3 seconds
+                    time.sleep(0.2)
+                    try:
+                        current_inner_html = element.get_attribute('innerHTML') or ''
+                        current_length = len(current_inner_html.strip())
+                        
+                        if current_inner_html == last_inner_html and current_length == last_content_length:
+                            stable_count += 1
+                            if stable_count >= 3:  # Stable for 0.6 seconds
+                                break
+                        else:
+                            stable_count = 0
+                            last_inner_html = current_inner_html
+                            last_content_length = current_length
+                    except:
+                        break
+                
+                # Step 4: Verify that actual content exists
+                inner_html = element.get_attribute('innerHTML') or ''
+                if len(inner_html.strip()) < 100:
+                    self.logger.debug(f"Tab panel content too short ({len(inner_html.strip())} chars), continuing check...")
+                    continue
+                
+                # Step 5: Check for actual fitment data elements
+                try:
+                    content_selectors = [
+                        'div#ctl00_Content_PageBody_ProductTabsLegacy_div_applicationListContainer table tbody tr',
+                        'div.whatThisFitsFitment',
+                        'div.col-lg-12',
+                        'table tbody tr',
+                        'div[class*="fitment"]',
+                        'div[class*="application"]',
+                    ]
+                    
+                    has_content = False
+                    for content_selector in content_selectors:
+                        try:
+                            full_selector = f"{selector} {content_selector}"
+                            content_elements = self.driver.find_elements(By.CSS_SELECTOR, full_selector)
+                            if content_elements:
+                                for elem in content_elements[:5]:
+                                    try:
+                                        text = elem.text.strip()
+                                        if text and len(text) > 10:
+                                            has_content = True
+                                            break
+                                    except:
+                                        continue
+                                if has_content:
+                                    break
+                        except:
+                            continue
+                    
+                    if not has_content:
+                        try:
+                            has_content_js = self.driver.execute_script(f"""
+                                var panel = document.querySelector('{selector}');
+                                if (!panel) return false;
+                                var text = panel.innerText || panel.textContent || '';
+                                return text.trim().length > 50;
+                            """)
+                            if not has_content_js:
+                                self.logger.debug("Tab panel exists but no content found yet, continuing...")
+                                continue
+                        except:
+                            pass
+                except:
+                    pass
+                
+                # Step 6: Final wait for any remaining async operations
+                time.sleep(1)
+                
+                # Step 7: Final verification
+                final_inner_html = element.get_attribute('innerHTML') or ''
+                if len(final_inner_html.strip()) > 100:
+                    self.logger.info(f"✓ Tab panel fully loaded with {len(final_inner_html.strip())} chars of content")
+                    return True
+                
+            except Exception as e:
+                self.logger.debug(f"Tab panel selector {selector} failed: {str(e)}")
+                continue
+        
+        self.logger.warning("⚠️ Tab panel not fully loaded after timeout")
+        return False
+    
+    def _find_and_click_show_more(self, max_attempts=5, wait_between_attempts=2):
+        """
+        Find and click 'Show More' button with multiple attempts and better detection.
+        Returns True if button was found and clicked, False otherwise.
+        """
+        if not self.driver:
+            return False
+        
+        wait = WebDriverWait(self.driver, 15)
+        show_more_selectors = [
+            (By.ID, 'ctl00_Content_PageBody_ProductTabsLegacy_showAllApplications'),
+            (By.CSS_SELECTOR, 'a.showMoreBtnLink'),
+            (By.CSS_SELECTOR, 'a.btn-link.showMoreBtnLink'),
+            (By.CSS_SELECTOR, 'button.showMoreBtnLink'),
+            (By.CSS_SELECTOR, 'button.btn-link.showMoreBtnLink'),
+            (By.XPATH, '//a[contains(text(), "Show More")]'),
+            (By.XPATH, '//button[contains(text(), "Show More")]'),
+            (By.XPATH, '//a[contains(@class, "showMore")]'),
+            (By.XPATH, '//button[contains(@class, "showMore")]'),
+        ]
+        
+        for attempt in range(max_attempts):
+            try:
+                if attempt > 0:
+                    time.sleep(wait_between_attempts)
+                
+                try:
+                    show_more_exists = self.driver.execute_script("""
+                        var buttons = document.querySelectorAll('button, a');
+                        for (var i = 0; i < buttons.length; i++) {
+                            var text = (buttons[i].textContent || buttons[i].innerText || '').toLowerCase();
+                            var className = (buttons[i].className || '').toLowerCase();
+                            if ((text.indexOf('show more') !== -1 || className.indexOf('showmore') !== -1) && 
+                                buttons[i].offsetParent !== null) {
+                                return true;
+                            }
+                        }
+                        return false;
+                    """)
+                    
+                    if not show_more_exists:
+                        if attempt == 0:
+                            self.logger.debug("'Show More' button not found via JavaScript check")
+                        continue
+                except:
+                    pass
+                
+                for selector_type, selector_value in show_more_selectors:
+                    try:
+                        elements = self.driver.find_elements(selector_type, selector_value)
+                        if not elements:
+                            continue
+                        
+                        for element in elements:
+                            try:
+                                if not element.is_displayed():
+                                    continue
+                                
+                                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", element)
+                                time.sleep(0.5)
+                                
+                                element = wait.until(EC.element_to_be_clickable((selector_type, selector_value)))
+                                element.click()
+                                self.logger.info(f"✓ Clicked 'Show More' button (attempt {attempt + 1})")
+                                time.sleep(1)
+                                return True
+                            except Exception as e:
+                                continue
+                    except Exception as e:
+                        continue
+                
+            except Exception as e:
+                self.logger.debug(f"Attempt {attempt + 1} to find 'Show More' button failed: {str(e)}")
+                continue
+        
+        self.logger.info("ℹ️ 'Show More' button not found after multiple attempts (may not be present or already clicked)")
+        return False
+    
+    def _wait_for_fitment_data_loaded(self, timeout=30, min_rows=1):
+        """
+        Wait for fitment rows to be loaded and verify they actually exist.
+        Returns True if rows are found, False otherwise.
+        """
+        if not self.driver:
+            return False
+        
+        wait = WebDriverWait(self.driver, timeout)
+        selectors = [
+            'div#ctl00_Content_PageBody_ProductTabsLegacy_div_applicationListContainer table tbody tr',
+            'div#WhatThisFitsTabComponent_TABPANEL div.col-lg-12',
+            'div.whatThisFitsFitment',
+            'div[class*="whatThisFits"]',
+        ]
+        
+        for check_round in range(5):
+            try:
+                if check_round > 0:
+                    time.sleep(2)
+                
+                for selector in selectors:
+                    try:
+                        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
+                        elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                        
+                        if len(elements) >= min_rows:
+                            valid_count = 0
+                            for elem in elements[:10]:
+                                try:
+                                    text = elem.text.strip()
+                                    html = elem.get_attribute('outerHTML') or ''
+                                    if text or (html and len(html) > 50):
+                                        valid_count += 1
+                                except:
+                                    pass
+                            
+                            if valid_count > 0:
+                                self.logger.info(f"✓ Fitment data loaded: found {len(elements)} elements ({valid_count} with content) via {selector}")
+                                time.sleep(2)
+                                return True
+                    except Exception as e:
+                        continue
+                
+                try:
+                    row_count = self.driver.execute_script("""
+                        var count = 0;
+                        var selectors = [
+                            'div#ctl00_Content_PageBody_ProductTabsLegacy_div_applicationListContainer table tbody tr',
+                            'div#WhatThisFitsTabComponent_TABPANEL div.col-lg-12',
+                            'div.whatThisFitsFitment'
+                        ];
+                        for (var i = 0; i < selectors.length; i++) {
+                            var elements = document.querySelectorAll(selectors[i]);
+                            if (elements.length > count) {
+                                count = elements.length;
+                            }
+                        }
+                        return count;
+                    """)
+                    
+                    if row_count >= min_rows:
+                        self.logger.info(f"✓ Fitment data loaded: found {row_count} rows via JavaScript")
+                        time.sleep(2)
+                        return True
+                except:
+                    pass
+                
+            except Exception as e:
+                continue
+        
+        self.logger.warning(f"⚠️ Fitment rows not found after {timeout}s (checked {check_round + 1} times)")
+        return False
+    
     def scrape_product(self, url):
         """Scrape single product from parts.vw.com"""
         max_retries = 5

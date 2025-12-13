@@ -357,6 +357,314 @@ class SubaruScraper(BaseScraperWithExtension):
         except:
             pass
     
+    def _wait_for_element_fully_loaded(self, selector, timeout=15, check_stable=True):
+        """Wait for element to be fully loaded and stable (no changes for 1 second)"""
+        wait = WebDriverWait(self.driver, timeout)
+        try:
+            element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
+            
+            if check_stable:
+                # Wait for element to be stable (no DOM changes)
+                stable_count = 0
+                last_html = element.get_attribute('outerHTML')
+                for _ in range(10):  # Check for up to 1 second
+                    time.sleep(0.1)
+                    current_html = element.get_attribute('outerHTML')
+                    if current_html == last_html:
+                        stable_count += 1
+                        if stable_count >= 3:  # Stable for 0.3 seconds
+                            break
+                    else:
+                        stable_count = 0
+                        last_html = current_html
+            
+            # Additional wait for any JavaScript to finish
+            time.sleep(0.5)
+            return element
+        except TimeoutException:
+            return None
+    
+    def _wait_for_tab_panel_loaded(self, timeout=30):
+        """
+        Wait for tab panel to be fully loaded after clicking tab.
+        Ensures ALL data is loaded, not just the panel container.
+        Returns True if panel is fully loaded, False otherwise.
+        """
+        if not self.driver:
+            return False
+        
+        wait = WebDriverWait(self.driver, timeout)
+        selectors = [
+            'div#fitments.tab-pane.active',
+            'div#ctl00_Content_PageBody_ProductTabsLegacy_UpdatePanel_applications',
+            'div[id*="fitment"][class*="active"]',
+            'div.tab-pane.active',
+            'div#WhatThisFitsTabComponent_TABPANEL',
+        ]
+        
+        for selector in selectors:
+            try:
+                # Step 1: Wait for panel element to be present and visible
+                element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
+                wait.until(EC.visibility_of(element))
+                
+                # Step 2: Wait for loading indicators to disappear
+                self.logger.debug("Waiting for loading indicators to disappear...")
+                for _ in range(20):  # Wait up to 4 seconds for loading to complete
+                    time.sleep(0.2)
+                    try:
+                        loading_indicators = self.driver.find_elements(By.CSS_SELECTOR, 
+                            'div.loading, div.spinner, div[class*="loading"], div[class*="spinner"], '
+                            'img[src*="loading"], img[src*="spinner"], .ajax-loader, .loading-overlay')
+                        visible_loading = [ind for ind in loading_indicators if ind.is_displayed()]
+                        if not visible_loading:
+                            break
+                    except:
+                        break
+                
+                # Step 3: Wait for content to be stable (not changing)
+                self.logger.debug("Waiting for content to stabilize...")
+                stable_count = 0
+                last_inner_html = ''
+                last_content_length = 0
+                
+                for check_round in range(15):  # Check for up to 3 seconds
+                    time.sleep(0.2)
+                    try:
+                        current_inner_html = element.get_attribute('innerHTML') or ''
+                        current_length = len(current_inner_html.strip())
+                        
+                        if current_inner_html == last_inner_html and current_length == last_content_length:
+                            stable_count += 1
+                            if stable_count >= 3:  # Stable for 0.6 seconds
+                                break
+                        else:
+                            stable_count = 0
+                            last_inner_html = current_inner_html
+                            last_content_length = current_length
+                    except:
+                        break
+                
+                # Step 4: Verify that actual content exists
+                inner_html = element.get_attribute('innerHTML') or ''
+                if len(inner_html.strip()) < 100:
+                    self.logger.debug(f"Tab panel content too short ({len(inner_html.strip())} chars), continuing check...")
+                    continue
+                
+                # Step 5: Check for actual fitment data elements
+                try:
+                    content_selectors = [
+                        'div#ctl00_Content_PageBody_ProductTabsLegacy_div_applicationListContainer table tbody tr',
+                        'div.whatThisFitsFitment',
+                        'div.col-lg-12',
+                        'table tbody tr',
+                        'div[class*="fitment"]',
+                        'div[class*="application"]',
+                    ]
+                    
+                    has_content = False
+                    for content_selector in content_selectors:
+                        try:
+                            full_selector = f"{selector} {content_selector}"
+                            content_elements = self.driver.find_elements(By.CSS_SELECTOR, full_selector)
+                            if content_elements:
+                                for elem in content_elements[:5]:
+                                    try:
+                                        text = elem.text.strip()
+                                        if text and len(text) > 10:
+                                            has_content = True
+                                            break
+                                    except:
+                                        continue
+                                if has_content:
+                                    break
+                        except:
+                            continue
+                    
+                    if not has_content:
+                        try:
+                            has_content_js = self.driver.execute_script(f"""
+                                var panel = document.querySelector('{selector}');
+                                if (!panel) return false;
+                                var text = panel.innerText || panel.textContent || '';
+                                return text.trim().length > 50;
+                            """)
+                            if not has_content_js:
+                                self.logger.debug("Tab panel exists but no content found yet, continuing...")
+                                continue
+                        except:
+                            pass
+                except:
+                    pass
+                
+                # Step 6: Final wait for any remaining async operations
+                time.sleep(1)
+                
+                # Step 7: Final verification
+                final_inner_html = element.get_attribute('innerHTML') or ''
+                if len(final_inner_html.strip()) > 100:
+                    self.logger.info(f"✓ Tab panel fully loaded with {len(final_inner_html.strip())} chars of content")
+                    return True
+                
+            except Exception as e:
+                self.logger.debug(f"Tab panel selector {selector} failed: {str(e)}")
+                continue
+        
+        self.logger.warning("⚠️ Tab panel not fully loaded after timeout")
+        return False
+    
+    def _find_and_click_show_more(self, max_attempts=5, wait_between_attempts=2):
+        """
+        Find and click 'Show More' button with multiple attempts and better detection.
+        Returns True if button was found and clicked, False otherwise.
+        """
+        if not self.driver:
+            return False
+        
+        wait = WebDriverWait(self.driver, 15)
+        show_more_selectors = [
+            (By.ID, 'ctl00_Content_PageBody_ProductTabsLegacy_showAllApplications'),
+            (By.CSS_SELECTOR, 'a.showMoreBtnLink'),
+            (By.CSS_SELECTOR, 'a.btn-link.showMoreBtnLink'),
+            (By.CSS_SELECTOR, 'button.showMoreBtnLink'),
+            (By.CSS_SELECTOR, 'button.btn-link.showMoreBtnLink'),
+            (By.XPATH, '//a[contains(text(), "Show More")]'),
+            (By.XPATH, '//button[contains(text(), "Show More")]'),
+            (By.XPATH, '//a[contains(@class, "showMore")]'),
+            (By.XPATH, '//button[contains(@class, "showMore")]'),
+        ]
+        
+        for attempt in range(max_attempts):
+            try:
+                if attempt > 0:
+                    time.sleep(wait_between_attempts)
+                
+                try:
+                    show_more_exists = self.driver.execute_script("""
+                        var buttons = document.querySelectorAll('button, a');
+                        for (var i = 0; i < buttons.length; i++) {
+                            var text = (buttons[i].textContent || buttons[i].innerText || '').toLowerCase();
+                            var className = (buttons[i].className || '').toLowerCase();
+                            if ((text.indexOf('show more') !== -1 || className.indexOf('showmore') !== -1) && 
+                                buttons[i].offsetParent !== null) {
+                                return true;
+                            }
+                        }
+                        return false;
+                    """)
+                    
+                    if not show_more_exists:
+                        if attempt == 0:
+                            self.logger.debug("'Show More' button not found via JavaScript check")
+                        continue
+                except:
+                    pass
+                
+                for selector_type, selector_value in show_more_selectors:
+                    try:
+                        elements = self.driver.find_elements(selector_type, selector_value)
+                        if not elements:
+                            continue
+                        
+                        for element in elements:
+                            try:
+                                if not element.is_displayed():
+                                    continue
+                                
+                                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", element)
+                                time.sleep(0.5)
+                                
+                                element = wait.until(EC.element_to_be_clickable((selector_type, selector_value)))
+                                element.click()
+                                self.logger.info(f"✓ Clicked 'Show More' button (attempt {attempt + 1})")
+                                time.sleep(1)
+                                return True
+                            except Exception as e:
+                                continue
+                    except Exception as e:
+                        continue
+                
+            except Exception as e:
+                self.logger.debug(f"Attempt {attempt + 1} to find 'Show More' button failed: {str(e)}")
+                continue
+        
+        self.logger.info("ℹ️ 'Show More' button not found after multiple attempts (may not be present or already clicked)")
+        return False
+    
+    def _wait_for_fitment_data_loaded(self, timeout=30, min_rows=1):
+        """
+        Wait for fitment rows to be loaded and verify they actually exist.
+        Returns True if rows are found, False otherwise.
+        """
+        if not self.driver:
+            return False
+        
+        wait = WebDriverWait(self.driver, timeout)
+        selectors = [
+            'div#ctl00_Content_PageBody_ProductTabsLegacy_div_applicationListContainer table tbody tr',
+            'div#WhatThisFitsTabComponent_TABPANEL div.col-lg-12',
+            'div.whatThisFitsFitment',
+            'div[class*="whatThisFits"]',
+        ]
+        
+        for check_round in range(5):
+            try:
+                if check_round > 0:
+                    time.sleep(2)
+                
+                for selector in selectors:
+                    try:
+                        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
+                        elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                        
+                        if len(elements) >= min_rows:
+                            valid_count = 0
+                            for elem in elements[:10]:
+                                try:
+                                    text = elem.text.strip()
+                                    html = elem.get_attribute('outerHTML') or ''
+                                    if text or (html and len(html) > 50):
+                                        valid_count += 1
+                                except:
+                                    pass
+                            
+                            if valid_count > 0:
+                                self.logger.info(f"✓ Fitment data loaded: found {len(elements)} elements ({valid_count} with content) via {selector}")
+                                time.sleep(2)
+                                return True
+                    except Exception as e:
+                        continue
+                
+                try:
+                    row_count = self.driver.execute_script("""
+                        var count = 0;
+                        var selectors = [
+                            'div#ctl00_Content_PageBody_ProductTabsLegacy_div_applicationListContainer table tbody tr',
+                            'div#WhatThisFitsTabComponent_TABPANEL div.col-lg-12',
+                            'div.whatThisFitsFitment'
+                        ];
+                        for (var i = 0; i < selectors.length; i++) {
+                            var elements = document.querySelectorAll(selectors[i]);
+                            if (elements.length > count) {
+                                count = elements.length;
+                            }
+                        }
+                        return count;
+                    """)
+                    
+                    if row_count >= min_rows:
+                        self.logger.info(f"✓ Fitment data loaded: found {row_count} rows via JavaScript")
+                        time.sleep(2)
+                        return True
+                except:
+                    pass
+                
+            except Exception as e:
+                continue
+        
+        self.logger.warning(f"⚠️ Fitment rows not found after {timeout}s (checked {check_round + 1} times)")
+        return False
+    
     def scrape_product(self, url):
         """Scrape single product from parts.subaru.com"""
         max_retries = 5
@@ -709,19 +1017,253 @@ class SubaruScraper(BaseScraperWithExtension):
                     if replaces_text:
                         product_data['replaces'] = replaces_text
             
-            # Extract fitment data - SimplePart: whatThisFitsFitment and whatThisFitsYears divs
-            # Structure: <div class="col-md-12">
-            #             <div class="col-lg-12">
-            #               <div class="whatThisFitsFitment col-lg-6"><span>Subaru Outback 2.5L CVT Plus </span></div>
-            #               <div class="whatThisFitsYears col-lg-6"><span><a href="...">2014</a></span></div>
-            #             </div>
-            #           </div>
-            # Look for fitment data in col-lg-12 containers that contain both fitment and years divs
+            # Extract fitment - CRITICAL: Must click "What This Fits" tab, wait, click "Show More", wait, then extract
+            fitment_rows_elements = []
+            selenium_extraction_success = False
+            
+            if self.driver:
+                try:
+                    self.logger.info("🔍 Step 1: Clicking 'What This Fits' tab...")
+                    
+                    # Step 1: Find and click the "What This Fits" tab
+                    wait = WebDriverWait(self.driver, 15)
+                    tab_selectors = [
+                        (By.ID, 'fitmentTab'),
+                        (By.CSS_SELECTOR, 'a[href="#fitments"]'),
+                        (By.CSS_SELECTOR, 'li#ctl00_Content_PageBody_ProductTabsLegacy_fitmentTabLI a'),
+                        (By.XPATH, '//a[contains(text(), "What This Fits")]'),
+                    ]
+                    
+                    tab_clicked = False
+                    for selector_type, selector_value in tab_selectors:
+                        try:
+                            tab_element = wait.until(EC.element_to_be_clickable((selector_type, selector_value)))
+                            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", tab_element)
+                            time.sleep(0.5)
+                            tab_element.click()
+                            tab_clicked = True
+                            self.logger.info("✓ Clicked 'What This Fits' tab")
+                            break
+                        except Exception as e:
+                            self.logger.debug(f"Tab selector {selector_value} failed: {e}")
+                            continue
+                    
+                    if not tab_clicked:
+                        self.logger.warning("⚠️ Could not find or click 'What This Fits' tab")
+                    else:
+                        # Step 2: WAIT for tab panel to be fully loaded
+                        self.logger.info("🔍 Step 2: Waiting for tab panel to load completely...")
+                        tab_panel_loaded = self._wait_for_tab_panel_loaded(timeout=30)
+                        if tab_panel_loaded:
+                            self.logger.info("✓ Tab panel loaded completely")
+                        else:
+                            self.logger.warning("⚠️ Tab panel may not have loaded completely, continuing anyway...")
+                        
+                        # Step 3: Click "Show More" button if present (with improved detection)
+                        self.logger.info("🔍 Step 3: Looking for 'Show More' button...")
+                        show_more_clicked = self._find_and_click_show_more(max_attempts=5, wait_between_attempts=2)
+                        
+                        # Step 4: WAIT for all fitment data to load completely
+                        self.logger.info("🔍 Step 4: Waiting for all fitment data to load completely...")
+                        fitment_loaded = self._wait_for_fitment_data_loaded(timeout=30, min_rows=1)
+                        
+                        if not fitment_loaded:
+                            # Try one more time after additional wait
+                            self.logger.info("🔍 Retrying fitment data load check after additional wait...")
+                            time.sleep(5)
+                            fitment_loaded = self._wait_for_fitment_data_loaded(timeout=20, min_rows=1)
+                        
+                        # Additional wait to ensure everything is stable
+                        time.sleep(1)
+                        
+                        # Step 5: Extract fitment data from fully loaded page
+                        self.logger.info("🔍 Step 5: Extracting fitment data...")
+                        
+                        try:
+                            # Get updated HTML after all interactions
+                            html = self.driver.page_source
+                            soup = BeautifulSoup(html, 'lxml')
+                            
+                            # Find all fitment rows using Selenium (more reliable for dynamic content)
+                            fitment_row_elements = []
+                            
+                            selectors_to_try = [
+                                'div#ctl00_Content_PageBody_ProductTabsLegacy_div_applicationListContainer table tbody tr',
+                                'div#WhatThisFitsTabComponent_TABPANEL div.col-lg-12',
+                                'div.whatThisFitsFitment',
+                                'div[class*="whatThisFits"]',
+                            ]
+                            
+                            for selector in selectors_to_try:
+                                try:
+                                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                                    if elements:
+                                        valid_elements = []
+                                        for elem in elements:
+                                            try:
+                                                text = elem.text.strip()
+                                                html = elem.get_attribute('outerHTML') or ''
+                                                if text or (html and len(html) > 50):
+                                                    valid_elements.append(elem)
+                                            except:
+                                                pass
+                                        
+                                        if valid_elements:
+                                            fitment_row_elements = valid_elements
+                                            self.logger.info(f"✓ Found {len(fitment_row_elements)} valid fitment rows via {selector}")
+                                            break
+                                except Exception as e:
+                                    continue
+                            
+                            if fitment_row_elements:
+                                self.logger.info(f"✓ Found {len(fitment_row_elements)} fitment rows")
+                                fitment_rows_elements = fitment_row_elements
+                                selenium_extraction_success = True
+                            else:
+                                self.logger.warning("⚠️ No fitment rows found")
+                            
+                        except Exception as e:
+                            self.logger.warning(f"⚠️ Error in fitment extraction steps: {str(e)}")
+                
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Error interacting with fitment tab: {str(e)}")
+            
+            # Extract fitment data from Selenium elements or fallback to HTML
+            if selenium_extraction_success and fitment_rows_elements:
+                self.logger.info(f"🔍 Processing {len(fitment_rows_elements)} fitment rows...")
+                for idx, row_element in enumerate(fitment_rows_elements):
+                    try:
+                        row_html = row_element.get_attribute('outerHTML')
+                        if not row_html:
+                            continue
+                        
+                        row_soup = BeautifulSoup(row_html, 'lxml')
+                        
+                        # Handle table structure
+                        if row_soup.name == 'tr' or row_soup.find('tr'):
+                            tds = row_soup.find_all('td')
+                            if len(tds) >= 1:
+                                vehicle_text = tds[0].get_text(strip=True)
+                                years = []
+                                if len(tds) >= 2:
+                                    years_cell = tds[1]
+                                    year_links = years_cell.find_all('a', href=True)
+                                    for link in year_links:
+                                        href = link.get('href', '')
+                                        year_match = re.search(r'/p/Subaru__/(\d{4})', href)
+                                        if year_match:
+                                            years.append(year_match.group(1))
+                                        else:
+                                            link_text = link.get_text(strip=True)
+                                            if link_text and link_text.isdigit() and len(link_text) == 4:
+                                                years.append(link_text)
+                                    if not years:
+                                        years_text = years_cell.get_text(strip=True)
+                                        year_matches = re.findall(r'\b(\d{4})\b', years_text)
+                                        years = [y for y in year_matches if 1900 <= int(y) <= 2100]
+                                
+                                if vehicle_text:
+                                    make = 'Subaru'
+                                    parse_text = vehicle_text.replace('Subaru ', '').strip()
+                                    words = parse_text.split()
+                                    model = words[0] if words else ''
+                                    
+                                    # Extract engine and trim from vehicle description
+                                    engine = ''
+                                    trim = ''
+                                    
+                                    # Pattern 1: Extract engine (e.g., "2.5L CVT", "3.6L V6", "2.0L Turbo")
+                                    engine_match = re.search(r'(\d+\.?\d*L\s*(?:V\d|I\d|CVT|Turbo|HYBRID)?(?:\s*MILD HYBRID EV-GAS \(MHEV\))?(?:\s*EV-GAS \(MHEV\))?(?:\s*GAS)?(?:\s*ELECTRIC)?(?:\s*A/T|\s*M/T|\s*CVT|\s*AUTO|\s*MANUAL)?)', parse_text, re.IGNORECASE)
+                                    if engine_match:
+                                        engine = engine_match.group(1).strip()
+                                        # Remove engine part from parse_text to isolate trim
+                                        engine_start = parse_text.find(engine)
+                                        engine_end = engine_start + len(engine)
+                                        remaining_text = parse_text[engine_end:].strip()
+                                        
+                                        # Extract trim from remaining text
+                                        # Pattern 1: Look for trim after AWD/FWD/RWD
+                                        trim_match = re.search(r'(?:AWD|FWD|RWD|4WD)\s+([A-Za-z0-9\s]+?)(?:\s+(?:Sedan|SUV|Hatchback|Coupe|Convertible|Wagon|Truck|Crossover)|$)', remaining_text, re.I)
+                                        if trim_match:
+                                            potential_trim = trim_match.group(1).strip()
+                                            trim_words_to_remove = ['AWD', 'FWD', 'RWD', '4WD', 'A/T', 'M/T', 'CVT', 'AUTO', 'MANUAL']
+                                            for word in trim_words_to_remove:
+                                                potential_trim = re.sub(r'\b' + re.escape(word) + r'\b', '', potential_trim, flags=re.I).strip()
+                                            if potential_trim:
+                                                trim = potential_trim
+                                        
+                                        # Pattern 2: Look for common Subaru trim keywords
+                                        if not trim:
+                                            subaru_trim_keywords = [
+                                                'Plus', 'Premium', 'Limited', 'Touring', 'Base', 'Sport', 
+                                                'XT', 'STI', 'WRX', 'Onyx', 'Wilderness', 'Outdoor', 
+                                                'Convenience', 'GT', 'SE', 'LE'
+                                            ]
+                                            for trim_keyword in subaru_trim_keywords:
+                                                trim_pattern = r'\b' + re.escape(trim_keyword) + r'\b'
+                                                if re.search(trim_pattern, remaining_text, re.I):
+                                                    trim = trim_keyword
+                                                    break
+                                        
+                                        # Pattern 3: If no specific trim found, take everything after engine/transmission/drivetrain
+                                        if not trim:
+                                            trim_candidate = re.sub(r'\s*(?:AWD|FWD|RWD|4WD)\s*', ' ', remaining_text, flags=re.I)
+                                            trim_candidate = re.sub(r'\s*(?:Sedan|SUV|Hatchback|Coupe|Convertible|Wagon|Truck|Crossover)\s*$', '', trim_candidate, flags=re.I)
+                                            trim_candidate = trim_candidate.strip()
+                                            if trim_candidate and len(trim_candidate) > 0:
+                                                trim = trim_candidate
+                                    else:
+                                        # No engine pattern found, try to extract trim from common patterns
+                                        subaru_trim_keywords = [
+                                            'Plus', 'Premium', 'Limited', 'Touring', 'Base', 'Sport', 
+                                            'XT', 'STI', 'WRX', 'Onyx', 'Wilderness', 'Outdoor', 
+                                            'Convenience', 'GT', 'SE', 'LE'
+                                        ]
+                                        for trim_keyword in subaru_trim_keywords:
+                                            trim_pattern = r'\b' + re.escape(trim_keyword) + r'\b'
+                                            if re.search(trim_pattern, parse_text, re.I):
+                                                trim = trim_keyword
+                                                break
+                                        
+                                        # If still no trim, and we have more than just model, use rest as trim
+                                        if not trim and len(words) > 1:
+                                            remaining_words = words[1:]
+                                            filtered_words = []
+                                            skip_words = ['AWD', 'FWD', 'RWD', '4WD', 'A/T', 'M/T', 'CVT', 'AUTO', 'MANUAL', 
+                                                          'Sedan', 'SUV', 'Hatchback', 'Coupe', 'Convertible', 'Wagon', 'Truck', 'Crossover']
+                                            for word in remaining_words:
+                                                if word.upper() not in [w.upper() for w in skip_words]:
+                                                    filtered_words.append(word)
+                                            if filtered_words:
+                                                trim = ' '.join(filtered_words).strip()
+                                    
+                                    if years:
+                                        for year in years:
+                                            product_data['fitments'].append({
+                                                'year': year,
+                                                'make': make,
+                                                'model': model,
+                                                'trim': trim,
+                                                'engine': engine
+                                            })
+                                    else:
+                                        product_data['fitments'].append({
+                                            'year': '',
+                                            'make': make,
+                                            'model': model,
+                                            'trim': trim,
+                                            'engine': engine
+                                        })
+                    except Exception as row_error:
+                        self.logger.debug(f"Error parsing fitment row {idx+1}: {str(row_error)}")
+                        continue
+            
+            # Fallback: Try BeautifulSoup parsing if Selenium extraction failed
+            if not product_data['fitments']:
             fitment_container = soup.find('div', class_='col-md-12')
             if fitment_container:
                 fitment_rows = fitment_container.find_all('div', class_='col-lg-12')
             else:
-                # Fallback: look for all col-lg-12 divs
                 fitment_rows = soup.find_all('div', class_='col-lg-12')
             
             for row in fitment_rows:
@@ -729,66 +1271,43 @@ class SubaruScraper(BaseScraperWithExtension):
                 years_cell = row.find('div', class_='whatThisFitsYears')
                 
                 if fitment_cell and years_cell:
-                    # Extract vehicle description
                     vehicle_desc = fitment_cell.get_text(strip=True)
-                    
                     if not vehicle_desc:
                         continue
                     
-                    # Make is always "Subaru"
                     make = 'Subaru'
-                    
-                    # Parse vehicle description: "Subaru Outback 2.5L CVT Plus"
-                    # Remove "Subaru" prefix
                     vehicle_desc_clean = re.sub(r'^Subaru\s+', '', vehicle_desc, flags=re.I).strip()
-                    
-                    # Extract model (first word after "Subaru")
                     words = vehicle_desc_clean.split()
-                    model = ''
-                    if len(words) >= 1:
-                        model = words[0]  # "Outback", "Forester", etc.
+                        model = words[0] if words else ''
                     
-                    # Extract engine (pattern like "2.5L CVT", "3.6L V6", "2.0L Turbo", etc.)
-                    # Look for patterns: "X.XL" or "XL" followed by transmission/engine type (CVT, V6, Turbo, etc.)
                     engine_match = re.search(r'(\d+\.?\d*L\s+[A-Z0-9/]+(?:\s+[A-Z0-9/]+)?)', vehicle_desc_clean, re.I)
                     engine = engine_match.group(1).strip() if engine_match else ''
                     
-                    # Extract trim - typically the last word(s) after engine
-                    # Examples: "Plus", "Premium", "Limited", "Touring", "Base", "Sport", etc.
                     trim = ''
                     if engine:
-                        # Remove model and engine to get trim
                         trim_text = vehicle_desc_clean
                         trim_text = re.sub(r'^' + re.escape(model) + r'\s+', '', trim_text, flags=re.I)
                         trim_text = re.sub(r'^' + re.escape(engine) + r'\s+', '', trim_text, flags=re.I)
                         trim = trim_text.strip()
                     else:
-                        # If no engine found, try to extract trim from end
-                        # Remove model
                         trim_text = vehicle_desc_clean
                         trim_text = re.sub(r'^' + re.escape(model) + r'\s+', '', trim_text, flags=re.I)
-                        # Common trim patterns for Subaru
                         trim_match = re.search(r'\b(Plus|Premium|Limited|Touring|Base|Sport|XT|STI|WRX|Onyx|Wilderness|Outdoor|Convenience)\b', trim_text, re.I)
                         if trim_match:
                             trim = trim_match.group(1).strip()
                         else:
-                            # If no match, take the remaining text as trim
                             trim = trim_text.strip()
                     
-                    # Extract years from years_cell
                     year_links = years_cell.find_all('a')
                     years = []
                     if year_links:
                         for link in year_links:
                             year_text = link.get_text(strip=True)
-                            # Extract 4-digit year
                             year_match = re.search(r'(\d{4})', year_text)
                             if year_match:
                                 years.append(year_match.group(1))
                     else:
-                        # Fallback: extract years from text (could be comma-separated)
                         years_text = years_cell.get_text(strip=True)
-                        # Try to find year ranges first (e.g., "2010-2015")
                         year_range_matches = re.findall(r'(\d{4})\s*-\s*(\d{4})', years_text)
                         if year_range_matches:
                             for start_year, end_year in year_range_matches:
@@ -799,11 +1318,9 @@ class SubaruScraper(BaseScraperWithExtension):
                                 except:
                                     pass
                         else:
-                            # Extract individual years (comma-separated)
                             year_matches = re.findall(r'(\d{4})', years_text)
                             years = year_matches
                     
-                    # Create fitment entry for each year (handle multiple years per fitment)
                     if years:
                         for year in years:
                             product_data['fitments'].append({
@@ -814,7 +1331,6 @@ class SubaruScraper(BaseScraperWithExtension):
                                 'engine': engine
                             })
                     else:
-                        # If no years found, create one entry without year
                         product_data['fitments'].append({
                             'year': '',
                             'make': make,
@@ -822,28 +1338,6 @@ class SubaruScraper(BaseScraperWithExtension):
                             'trim': trim,
                             'engine': engine
                         })
-            
-            # Fallback: Try to extract from guided navigation year links
-            if not product_data['fitments']:
-                guided_nav = soup.find('div', class_='guided-nav')
-                if guided_nav:
-                    year_links = guided_nav.find_all('a', class_='guided-nav__body__item')
-                    if year_links:
-                        # Extract year from link text or href
-                        for link in year_links:
-                            year_text = link.get_text(strip=True)
-                            year_match = re.search(r'(\d{4})', year_text)
-                            if year_match:
-                                year = year_match.group(1)
-                                # Make is always Subaru
-                                # Model and other details might be in the page context
-                                product_data['fitments'].append({
-                                    'year': year,
-                                    'make': 'Subaru',
-                                    'model': '',
-                                    'trim': '',
-                                    'engine': ''
-                                })
             
             if not product_data['fitments']:
                 product_data['fitments'].append({
