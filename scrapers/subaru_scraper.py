@@ -1260,84 +1260,84 @@ class SubaruScraper(BaseScraperWithExtension):
             
             # Fallback: Try BeautifulSoup parsing if Selenium extraction failed
             if not product_data['fitments']:
-            fitment_container = soup.find('div', class_='col-md-12')
-            if fitment_container:
-                fitment_rows = fitment_container.find_all('div', class_='col-lg-12')
-            else:
-                fitment_rows = soup.find_all('div', class_='col-lg-12')
-            
-            for row in fitment_rows:
-                fitment_cell = row.find('div', class_='whatThisFitsFitment')
-                years_cell = row.find('div', class_='whatThisFitsYears')
+                fitment_container = soup.find('div', class_='col-md-12')
+                if fitment_container:
+                    fitment_rows = fitment_container.find_all('div', class_='col-lg-12')
+                else:
+                    fitment_rows = soup.find_all('div', class_='col-lg-12')
                 
-                if fitment_cell and years_cell:
-                    vehicle_desc = fitment_cell.get_text(strip=True)
-                    if not vehicle_desc:
-                        continue
+                for row in fitment_rows:
+                    fitment_cell = row.find('div', class_='whatThisFitsFitment')
+                    years_cell = row.find('div', class_='whatThisFitsYears')
                     
-                    make = 'Subaru'
-                    vehicle_desc_clean = re.sub(r'^Subaru\s+', '', vehicle_desc, flags=re.I).strip()
-                    words = vehicle_desc_clean.split()
+                    if fitment_cell and years_cell:
+                        vehicle_desc = fitment_cell.get_text(strip=True)
+                        if not vehicle_desc:
+                            continue
+                        
+                        make = 'Subaru'
+                        vehicle_desc_clean = re.sub(r'^Subaru\s+', '', vehicle_desc, flags=re.I).strip()
+                        words = vehicle_desc_clean.split()
                         model = words[0] if words else ''
-                    
-                    engine_match = re.search(r'(\d+\.?\d*L\s+[A-Z0-9/]+(?:\s+[A-Z0-9/]+)?)', vehicle_desc_clean, re.I)
-                    engine = engine_match.group(1).strip() if engine_match else ''
-                    
-                    trim = ''
-                    if engine:
-                        trim_text = vehicle_desc_clean
-                        trim_text = re.sub(r'^' + re.escape(model) + r'\s+', '', trim_text, flags=re.I)
-                        trim_text = re.sub(r'^' + re.escape(engine) + r'\s+', '', trim_text, flags=re.I)
-                        trim = trim_text.strip()
-                    else:
-                        trim_text = vehicle_desc_clean
-                        trim_text = re.sub(r'^' + re.escape(model) + r'\s+', '', trim_text, flags=re.I)
-                        trim_match = re.search(r'\b(Plus|Premium|Limited|Touring|Base|Sport|XT|STI|WRX|Onyx|Wilderness|Outdoor|Convenience)\b', trim_text, re.I)
-                        if trim_match:
-                            trim = trim_match.group(1).strip()
-                        else:
+                        
+                        engine_match = re.search(r'(\d+\.?\d*L\s+[A-Z0-9/]+(?:\s+[A-Z0-9/]+)?)', vehicle_desc_clean, re.I)
+                        engine = engine_match.group(1).strip() if engine_match else ''
+                        
+                        trim = ''
+                        if engine:
+                            trim_text = vehicle_desc_clean
+                            trim_text = re.sub(r'^' + re.escape(model) + r'\s+', '', trim_text, flags=re.I)
+                            trim_text = re.sub(r'^' + re.escape(engine) + r'\s+', '', trim_text, flags=re.I)
                             trim = trim_text.strip()
-                    
-                    year_links = years_cell.find_all('a')
-                    years = []
-                    if year_links:
-                        for link in year_links:
-                            year_text = link.get_text(strip=True)
-                            year_match = re.search(r'(\d{4})', year_text)
-                            if year_match:
-                                years.append(year_match.group(1))
-                    else:
-                        years_text = years_cell.get_text(strip=True)
-                        year_range_matches = re.findall(r'(\d{4})\s*-\s*(\d{4})', years_text)
-                        if year_range_matches:
-                            for start_year, end_year in year_range_matches:
-                                try:
-                                    start = int(start_year)
-                                    end = int(end_year)
-                                    years.extend([str(y) for y in range(start, end + 1)])
-                                except:
-                                    pass
                         else:
-                            year_matches = re.findall(r'(\d{4})', years_text)
-                            years = year_matches
-                    
-                    if years:
-                        for year in years:
+                            trim_text = vehicle_desc_clean
+                            trim_text = re.sub(r'^' + re.escape(model) + r'\s+', '', trim_text, flags=re.I)
+                            trim_match = re.search(r'\b(Plus|Premium|Limited|Touring|Base|Sport|XT|STI|WRX|Onyx|Wilderness|Outdoor|Convenience)\b', trim_text, re.I)
+                            if trim_match:
+                                trim = trim_match.group(1).strip()
+                            else:
+                                trim = trim_text.strip()
+                        
+                        year_links = years_cell.find_all('a')
+                        years = []
+                        if year_links:
+                            for link in year_links:
+                                year_text = link.get_text(strip=True)
+                                year_match = re.search(r'(\d{4})', year_text)
+                                if year_match:
+                                    years.append(year_match.group(1))
+                        else:
+                            years_text = years_cell.get_text(strip=True)
+                            year_range_matches = re.findall(r'(\d{4})\s*-\s*(\d{4})', years_text)
+                            if year_range_matches:
+                                for start_year, end_year in year_range_matches:
+                                    try:
+                                        start = int(start_year)
+                                        end = int(end_year)
+                                        years.extend([str(y) for y in range(start, end + 1)])
+                                    except:
+                                        pass
+                            else:
+                                year_matches = re.findall(r'(\d{4})', years_text)
+                                years = year_matches
+                        
+                        if years:
+                            for year in years:
+                                product_data['fitments'].append({
+                                    'year': year,
+                                    'make': make,
+                                    'model': model,
+                                    'trim': trim,
+                                    'engine': engine
+                                })
+                        else:
                             product_data['fitments'].append({
-                                'year': year,
+                                'year': '',
                                 'make': make,
                                 'model': model,
                                 'trim': trim,
                                 'engine': engine
                             })
-                    else:
-                        product_data['fitments'].append({
-                            'year': '',
-                            'make': make,
-                            'model': model,
-                            'trim': trim,
-                            'engine': engine
-                        })
             
             if not product_data['fitments']:
                 product_data['fitments'].append({
