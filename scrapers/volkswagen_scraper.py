@@ -704,18 +704,20 @@ class VolkswagenScraper(BaseScraperWithExtension):
         
         try:
             # Extract title - Multiple strategies
-            title_elem = soup.find('h1', class_='product-title')
+            # Priority 1: SimplePart platform: span.prodDescriptH2 (most reliable for VW)
+            title_elem = soup.find('span', class_='prodDescriptH2')
             if title_elem:
                 product_data['title'] = title_elem.get_text(strip=True)
             
+            # Priority 2: h1 with product-title class
             if not product_data['title']:
-                title_elem = soup.find('h1')
+                title_elem = soup.find('h1', class_='product-title')
                 if title_elem:
                     product_data['title'] = title_elem.get_text(strip=True)
             
-            # SimplePart platform: span.prodDescriptH2
+            # Priority 3: Any h1
             if not product_data['title']:
-                title_elem = soup.find('span', class_='prodDescriptH2')
+                title_elem = soup.find('h1')
                 if title_elem:
                     product_data['title'] = title_elem.get_text(strip=True)
             
