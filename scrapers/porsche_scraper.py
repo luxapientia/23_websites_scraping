@@ -908,6 +908,89 @@ class PorscheScraper(BaseScraperWithExtension):
                     if replaces_text:
                         product_data['replaces'] = replaces_text
             
+            # Extract fitment - CRITICAL: Must click "What This Fits" tab, wait, wait for initial data, click "Show More", wait, then extract
+            fitment_rows_elements = []
+            selenium_extraction_success = False
+            
+            if self.driver:
+                try:
+                    self.logger.info("🔍 Step 1: Clicking 'What This Fits' tab...")
+                    
+                    # Step 1: Find and click the "What This Fits" tab
+                    wait = WebDriverWait(self.driver, 15)
+                    tab_selectors = [
+                        (By.ID, 'fitmentTab'),
+                        (By.CSS_SELECTOR, 'a[href="#fitments"]'),
+                        (By.CSS_SELECTOR, 'li#ctl00_Content_PageBody_ProductTabsLegacy_fitmentTabLI a'),
+                        (By.XPATH, '//a[contains(text(), "What This Fits")]'),
+                    ]
+                    
+                    tab_clicked = False
+                    for selector_type, selector_value in tab_selectors:
+                        try:
+                            tab_element = wait.until(EC.element_to_be_clickable((selector_type, selector_value)))
+                            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", tab_element)
+                            time.sleep(0.5)
+                            tab_element.click()
+                            tab_clicked = True
+                            self.logger.info("✓ Clicked 'What This Fits' tab")
+                            break
+                        except Exception as e:
+                            self.logger.debug(f"Tab selector {selector_value} failed: {e}")
+                            continue
+                    
+                    if not tab_clicked:
+                        self.logger.warning("⚠️ Could not find or click 'What This Fits' tab")
+                    else:
+                        # Step 2: WAIT for tab panel to be fully loaded
+                        self.logger.info("🔍 Step 2: Waiting for tab panel to load completely...")
+                        tab_panel_loaded = self._wait_for_tab_panel_loaded(timeout=30)
+                        if tab_panel_loaded:
+                            self.logger.info("✓ Tab panel loaded completely")
+                        else:
+                            self.logger.warning("⚠️ Tab panel may not have loaded completely, continuing anyway...")
+                        
+                        # Step 2.5: WAIT for all initial fitment data in tab panel to be fully loaded
+                        self.logger.info("🔍 Step 2.5: Waiting for all initial fitment data to load completely in tab panel...")
+                        initial_fitment_loaded = self._wait_for_fitment_data_loaded(timeout=30, min_rows=1)
+                        if initial_fitment_loaded:
+                            self.logger.info("✓ Initial fitment data loaded completely")
+                        else:
+                            self.logger.warning("⚠️ Initial fitment data may not have loaded completely, continuing anyway...")
+                        
+                        # Additional wait to ensure initial data is stable before clicking Show More
+                        time.sleep(2)
+                        
+                        # Step 3: Click "Show More" button if present (with improved detection)
+                        # Only click after initial fitment data is fully loaded
+                        self.logger.info("🔍 Step 3: Looking for 'Show More' button (after initial data loaded)...")
+                        show_more_clicked = self._find_and_click_show_more(max_attempts=5, wait_between_attempts=2)
+                        
+                        # Step 4: WAIT for all additional fitment data to load completely after clicking Show More
+                        if show_more_clicked:
+                            self.logger.info("🔍 Step 4: Waiting for all additional fitment data to load completely after 'Show More'...")
+                            fitment_loaded = self._wait_for_fitment_data_loaded(timeout=30, min_rows=1)
+                            
+                            if not fitment_loaded:
+                                # Try one more time after additional wait
+                                self.logger.info("🔍 Retrying fitment data load check after additional wait...")
+                                time.sleep(5)
+                                fitment_loaded = self._wait_for_fitment_data_loaded(timeout=20, min_rows=1)
+                            
+                            # Additional wait to ensure everything is stable
+                            time.sleep(2)
+                        else:
+                            self.logger.info("ℹ️ 'Show More' button not found or already clicked, using initial fitment data")
+                            # Still wait a bit to ensure data is stable
+                            time.sleep(1)
+                        
+                        # Get updated HTML after all interactions
+                        html = self.driver.page_source
+                        soup = BeautifulSoup(html, 'lxml')
+                
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Error interacting with fitment tab: {str(e)}")
+            
             # Extract fitment - SimplePart: table with whatThisFitsFitment and whatThisFitsYears
             fitment_table = soup.find('table')
             if fitment_table:

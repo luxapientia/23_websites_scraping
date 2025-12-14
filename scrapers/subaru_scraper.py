@@ -1059,22 +1059,39 @@ class SubaruScraper(BaseScraperWithExtension):
                         else:
                             self.logger.warning("⚠️ Tab panel may not have loaded completely, continuing anyway...")
                         
+                        # Step 2.5: WAIT for all initial fitment data in tab panel to be fully loaded
+                        self.logger.info("🔍 Step 2.5: Waiting for all initial fitment data to load completely in tab panel...")
+                        initial_fitment_loaded = self._wait_for_fitment_data_loaded(timeout=30, min_rows=1)
+                        if initial_fitment_loaded:
+                            self.logger.info("✓ Initial fitment data loaded completely")
+                        else:
+                            self.logger.warning("⚠️ Initial fitment data may not have loaded completely, continuing anyway...")
+                        
+                        # Additional wait to ensure initial data is stable before clicking Show More
+                        time.sleep(2)
+                        
                         # Step 3: Click "Show More" button if present (with improved detection)
-                        self.logger.info("🔍 Step 3: Looking for 'Show More' button...")
+                        # Only click after initial fitment data is fully loaded
+                        self.logger.info("🔍 Step 3: Looking for 'Show More' button (after initial data loaded)...")
                         show_more_clicked = self._find_and_click_show_more(max_attempts=5, wait_between_attempts=2)
                         
-                        # Step 4: WAIT for all fitment data to load completely
-                        self.logger.info("🔍 Step 4: Waiting for all fitment data to load completely...")
-                        fitment_loaded = self._wait_for_fitment_data_loaded(timeout=30, min_rows=1)
-                        
-                        if not fitment_loaded:
-                            # Try one more time after additional wait
-                            self.logger.info("🔍 Retrying fitment data load check after additional wait...")
-                            time.sleep(5)
-                            fitment_loaded = self._wait_for_fitment_data_loaded(timeout=20, min_rows=1)
-                        
-                        # Additional wait to ensure everything is stable
-                        time.sleep(1)
+                        # Step 4: WAIT for all additional fitment data to load completely after clicking Show More
+                        if show_more_clicked:
+                            self.logger.info("🔍 Step 4: Waiting for all additional fitment data to load completely after 'Show More'...")
+                            fitment_loaded = self._wait_for_fitment_data_loaded(timeout=30, min_rows=1)
+                            
+                            if not fitment_loaded:
+                                # Try one more time after additional wait
+                                self.logger.info("🔍 Retrying fitment data load check after additional wait...")
+                                time.sleep(5)
+                                fitment_loaded = self._wait_for_fitment_data_loaded(timeout=20, min_rows=1)
+                            
+                            # Additional wait to ensure everything is stable
+                            time.sleep(2)
+                        else:
+                            self.logger.info("ℹ️ 'Show More' button not found or already clicked, using initial fitment data")
+                            # Still wait a bit to ensure data is stable
+                            time.sleep(1)
                         
                         # Step 5: Extract fitment data from fully loaded page
                         self.logger.info("🔍 Step 5: Extracting fitment data...")

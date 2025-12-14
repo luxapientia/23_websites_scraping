@@ -1399,6 +1399,7 @@ class BaseScraper(ABC):
             'steering wheel',
             'Wheel Flange',
             'Wheel Flare',
+            'wheel brush',
             'wheel bearing',
             'Wheel Spacer',
             'bearing hub',
