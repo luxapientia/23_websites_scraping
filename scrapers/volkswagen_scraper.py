@@ -1006,30 +1006,38 @@ class VolkswagenScraper(BaseScraperWithExtension):
                             self.logger.warning("⚠️ Initial fitment data may not have loaded completely, continuing anyway...")
                         
                         # Additional wait to ensure initial data is stable before clicking Show More
+                        self.logger.info("⏳ Waiting 2 seconds to ensure initial data is stable...")
                         time.sleep(2)
                         
-                        # Step 3: Click "Show More" button if present (with improved detection)
-                        # Only click after initial fitment data is fully loaded
+                        # Step 3: ALWAYS try to click "Show More" button after initial fitment data is loaded
+                        # This is a critical step - we must proceed to click Show More
                         self.logger.info("🔍 Step 3: Looking for 'Show More' button (after initial data loaded)...")
                         show_more_clicked = self._find_and_click_show_more(max_attempts=5, wait_between_attempts=2)
                         
-                        # Step 4: WAIT for all additional fitment data to load completely after clicking Show More
                         if show_more_clicked:
-                            self.logger.info("🔍 Step 4: Waiting for all additional fitment data to load completely after 'Show More'...")
-                            fitment_loaded = self._wait_for_fitment_data_loaded(timeout=30, min_rows=1)
-                            
-                            if not fitment_loaded:
-                                # Try one more time after additional wait
-                                self.logger.info("🔍 Retrying fitment data load check after additional wait...")
-                                time.sleep(5)
-                                fitment_loaded = self._wait_for_fitment_data_loaded(timeout=20, min_rows=1)
-                            
-                            # Additional wait to ensure everything is stable
-                            time.sleep(2)
+                            self.logger.info("✓ 'Show More' button clicked successfully")
                         else:
-                            self.logger.info("ℹ️ 'Show More' button not found or already clicked, using initial fitment data")
-                            # Still wait a bit to ensure data is stable
-                            time.sleep(1)
+                            self.logger.info("ℹ️ 'Show More' button not found or already clicked")
+                        
+                        # Step 4: WAIT for all additional fitment data to load completely after clicking Show More
+                        # Always wait, even if Show More wasn't clicked (in case data is still loading)
+                        self.logger.info("🔍 Step 4: Waiting for all fitment data to load completely (after Show More attempt)...")
+                        fitment_loaded = self._wait_for_fitment_data_loaded(timeout=30, min_rows=1)
+                        
+                        if not fitment_loaded:
+                            # Try one more time after additional wait
+                            self.logger.info("🔍 Retrying fitment data load check after additional wait...")
+                            time.sleep(5)
+                            fitment_loaded = self._wait_for_fitment_data_loaded(timeout=20, min_rows=1)
+                        
+                        if fitment_loaded:
+                            self.logger.info("✓ All fitment data loaded completely")
+                        else:
+                            self.logger.warning("⚠️ Fitment data may not have loaded completely, continuing with extraction...")
+                        
+                        # Additional wait to ensure everything is stable before extraction
+                        self.logger.info("⏳ Waiting 2 seconds to ensure all data is stable before extraction...")
+                        time.sleep(2)
                         
                         # Get updated HTML after all interactions
                         html = self.driver.page_source

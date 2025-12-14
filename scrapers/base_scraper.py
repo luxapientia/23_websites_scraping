@@ -1423,8 +1423,14 @@ class BaseScraper(ABC):
             'lug bolt',
             'tire pressure', 
             'tpms',
+            'wheel lock',
             'wheel lock nut',
-            'wheel lock key', 
+            'wheel lock key',
+            'wheel locking',
+            'locking wheel',
+            'locking wheel nut',
+            'wheel lock set',
+            'wheel lock kit',
             'wheel alignment',
             'wheel opening', 
             'wheel house', 
@@ -1494,9 +1500,25 @@ class BaseScraper(ABC):
         # Check all exclude keywords and find the longest match
         for exclude in sorted_exclude_keywords:
             exclude_lower = exclude.lower()
-            if exclude_lower in text and len(exclude) > longest_exclude_length:
-                longest_exclude_match = exclude
-                longest_exclude_length = len(exclude)
+            # Use word boundary matching for better accuracy
+            if len(exclude.split()) == 1:
+                # Single word: match as whole word using word boundaries
+                pattern = r'\b' + re.escape(exclude_lower) + r'\b'
+                if re.search(pattern, text):
+                    if len(exclude) > longest_exclude_length:
+                        longest_exclude_match = exclude
+                        longest_exclude_length = len(exclude)
+            else:
+                # Multi-word: match the phrase with word boundaries at start and end
+                # Escape the phrase and add word boundaries
+                escaped_phrase = re.escape(exclude_lower)
+                # Replace escaped spaces with \s+ to allow flexible spacing
+                escaped_phrase = escaped_phrase.replace(r'\ ', r'\s+')
+                pattern = r'\b' + escaped_phrase + r'\b'
+                if re.search(pattern, text):
+                    if len(exclude) > longest_exclude_length:
+                        longest_exclude_match = exclude
+                        longest_exclude_length = len(exclude)
         
         # If both match, the longer/more specific one wins
         # If only one matches, use that result
