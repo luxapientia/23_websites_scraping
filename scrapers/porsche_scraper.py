@@ -60,8 +60,8 @@ class PorscheScraper(BaseScraperWithExtension):
             if not self.driver:
                 self.ensure_driver()
             
-            # Search URL with numResults=50 to get all products on one page (no pagination)
-            search_url = f"{self.base_url}/productSearch.aspx?ukey_make=5803&modelYear=0&ukey_model=0&ukey_trimLevel=0&ukey_driveline=0&ukey_Category=0&numResults=50&sortOrder=Relevance&ukey_tag=0&isOnSale=0&isAccessory=0&isPerformance=0&showAllModels=0&searchTerm=wheel"
+            # Search URL with numResults=250 to get all products on one page (no pagination)
+            search_url = f"{self.base_url}/productSearch.aspx?ukey_make=5803&modelYear=0&ukey_model=0&ukey_trimLevel=0&ukey_driveline=0&ukey_Category=0&numResults=250&sortOrder=Relevance&ukey_tag=0&isOnSale=0&isAccessory=0&isPerformance=0&showAllModels=0&searchTerm=wheel"
             self.logger.info(f"Searching: {search_url}")
             
             original_timeout = self.page_load_timeout
@@ -982,87 +982,192 @@ class PorscheScraper(BaseScraperWithExtension):
                         self.logger.info("⏳ Waiting 5 seconds to ensure all data is stable before extraction...")
                         time.sleep(5)
                         
-                        # Get updated HTML after all interactions
-                        html = self.driver.page_source
-                        soup = BeautifulSoup(html, 'lxml')
+                        # Step 5: Extract fitment data from fully loaded page
+                        self.logger.info("🔍 Step 5: Extracting fitment data...")
+                        
+                        try:
+                            # Get updated HTML after all interactions
+                            html = self.driver.page_source
+                            soup = BeautifulSoup(html, 'lxml')
+                            
+                            # Find all fitment rows using Selenium (more reliable for dynamic content)
+                            fitment_row_elements = []
+                            
+                            selectors_to_try = [
+                                'div#ctl00_Content_PageBody_ProductTabsLegacy_div_applicationListContainer table tbody tr',
+                                'div#WhatThisFitsTabComponent_TABPANEL div.col-lg-12',
+                                'div.whatThisFitsFitment',
+                                'div[class*="whatThisFits"]',
+                            ]
+                            
+                            for selector in selectors_to_try:
+                                try:
+                                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                                    if elements:
+                                        valid_elements = []
+                                        for elem in elements:
+                                            try:
+                                                text = elem.text.strip()
+                                                html = elem.get_attribute('outerHTML') or ''
+                                                if text or (html and len(html) > 50):
+                                                    valid_elements.append(elem)
+                                            except:
+                                                pass
+                                        
+                                        if valid_elements:
+                                            fitment_row_elements = valid_elements
+                                            self.logger.info(f"✓ Found {len(fitment_row_elements)} valid fitment rows via {selector}")
+                                            break
+                                except Exception as e:
+                                    continue
+                            
+                            if fitment_row_elements:
+                                self.logger.info(f"✓ Found {len(fitment_row_elements)} fitment rows")
+                                fitment_rows_elements = fitment_row_elements
+                                selenium_extraction_success = True
+                            else:
+                                self.logger.warning("⚠️ No fitment rows found via Selenium selectors")
+                        
+                        except Exception as selenium_error:
+                            self.logger.warning(f"⚠️ Error extracting fitment via Selenium: {str(selenium_error)}")
+                            selenium_extraction_success = False
                 
                 except Exception as e:
                     self.logger.warning(f"⚠️ Error interacting with fitment tab: {str(e)}")
             
-            # Extract fitment - SimplePart: table with whatThisFitsFitment and whatThisFitsYears
-            fitment_table = soup.find('table')
-            if fitment_table:
-                rows = fitment_table.find_all('tr')
-                for row in rows:
-                    fitment_cell = row.find('td', class_='whatThisFitsFitment')
-                    years_cell = row.find('td', class_='whatThisFitsYears')
-                    
-                    if fitment_cell and years_cell:
-                        # Extract vehicle description
-                        vehicle_desc = fitment_cell.get_text(strip=True)
+            # Extract fitment data from Selenium elements or fallback to HTML
+            if selenium_extraction_success and fitment_rows_elements:
+                self.logger.info(f"🔍 Processing {len(fitment_rows_elements)} fitment rows from Selenium WebElements...")
+                for idx, row_element in enumerate(fitment_rows_elements):
+                    try:
+                        # Get outerHTML of the WebElement and parse with BeautifulSoup
+                        row_html = row_element.get_attribute('outerHTML')
+                        if not row_html:
+                            continue
                         
-                        # Parse vehicle description: "Porsche Panamera 3.6L V6 A/T AWD 4 Hatchback"
-                        # Make is always "Porsche"
+                        row_soup = BeautifulSoup(row_html, 'lxml')
+                        
+                        # Handle both table rows (tr) and div structures
+                        vehicle_text = ''
+                        years = []
+                        
+                        # Check if this is a table row (tr)
+                        if row_soup.name == 'tr' or row_soup.find('tr'):
+                            # Table structure: extract from table cells (td)
+                            tds = row_soup.find_all('td')
+                            if len(tds) >= 2:
+                                # First cell typically has vehicle description, second has years
+                                vehicle_text = tds[0].get_text(strip=True)
+                                years_cell = tds[1]
+                                # Extract years from links or text
+                                year_links = years_cell.find_all('a', href=True)
+                                for link in year_links:
+                                    href = link.get('href', '')
+                                    year_match = re.search(r'/p/Porsche_(\d{4})', href)
+                                    if year_match:
+                                        years.append(year_match.group(1))
+                                    else:
+                                        link_text = link.get_text(strip=True)
+                                        if link_text and link_text.isdigit() and len(link_text) == 4:
+                                            years.append(link_text)
+                                if not years:
+                                    years_text = years_cell.get_text(strip=True)
+                                    year_matches = re.findall(r'\b(\d{4})\b', years_text)
+                                    years = [y for y in year_matches if 1900 <= int(y) <= 2100]
+                        else:
+                            # Div structure: use whatThisFitsFitment and whatThisFitsYears
+                            fitment_div = row_soup.find('div', class_=lambda x: x and ('whatThisFitsFitment' in str(x) if x else False))
+                            if not fitment_div:
+                                # Try finding by any div with the class
+                                fitment_div = row_soup.find('div', class_=re.compile(r'whatThisFitsFitment', re.I))
+                            
+                            if not fitment_div:
+                                continue
+                            
+                            vehicle_span = fitment_div.find('span')
+                            if not vehicle_span:
+                                continue
+                            
+                            vehicle_text = vehicle_span.get_text(strip=True)
+                            if not vehicle_text:
+                                continue
+                            
+                            # Find years using Selenium directly from the row element (more reliable)
+                            try:
+                                years_div_element = row_element.find_element(By.CSS_SELECTOR, 'div.whatThisFitsYears')
+                                year_links = years_div_element.find_elements(By.TAG_NAME, 'a')
+                                
+                                for link in year_links:
+                                    href = link.get_attribute('href') or ''
+                                    year_match = re.search(r'/p/Porsche_(\d{4})', href)
+                                    if year_match:
+                                        years.append(year_match.group(1))
+                                    else:
+                                        # Try text content
+                                        link_text = link.text.strip()
+                                        if link_text and link_text.isdigit() and len(link_text) == 4:
+                                            years.append(link_text)
+                                
+                                # If no links, try text content
+                                if not years:
+                                    years_text = years_div_element.text
+                                    year_matches = re.findall(r'\b(\d{4})\b', years_text)
+                                    years = [y for y in year_matches if 1900 <= int(y) <= 2100]
+                            except Exception as year_error:
+                                # Fallback: try finding years div in BeautifulSoup
+                                try:
+                                    years_div = row_soup.find('div', class_=lambda x: x and ('whatThisFitsYears' in str(x) if x else False))
+                                    if not years_div:
+                                        years_div = row_soup.find('div', class_=re.compile(r'whatThisFitsYears', re.I))
+                                    
+                                    if years_div:
+                                        year_links = years_div.find_all('a', href=True)
+                                        for link in year_links:
+                                            href = link.get('href', '')
+                                            year_match = re.search(r'/p/Porsche_(\d{4})', href)
+                                            if year_match:
+                                                years.append(year_match.group(1))
+                                            else:
+                                                link_text = link.get_text(strip=True)
+                                                if link_text and link_text.isdigit() and len(link_text) == 4:
+                                                    years.append(link_text)
+                                        if not years:
+                                            years_text = years_div.get_text(strip=True)
+                                            year_matches = re.findall(r'\b(\d{4})\b', years_text)
+                                            years = [y for y in year_matches if 1900 <= int(y) <= 2100]
+                                except Exception as fallback_error:
+                                    self.logger.debug(f"Error extracting years (both methods): {str(fallback_error)}")
+                        
+                        if not vehicle_text:
+                            continue
+                        
+                        # Parse vehicle_text
                         make = 'Porsche'
+                        parse_text = vehicle_text
+                        if parse_text.startswith('Porsche '):
+                            parse_text = parse_text[8:].strip()
                         
-                        # Extract model (second word, typically "Panamera", "Cayenne", etc.)
-                        words = vehicle_desc.split()
-                        model = ''
-                        if len(words) >= 2:
-                            # Model is typically the second word
-                            model = words[1]  # "Panamera"
+                        words = parse_text.split()
+                        model = words[0] if words else ''
                         
-                        # Extract engine (pattern like "3.6L V6" or "4.8L V8")
-                        engine_match = re.search(r'(\d+\.?\d*L\s+V\d+)', vehicle_desc, re.I)
-                        engine = engine_match.group(1).strip() if engine_match else ''
-                        
-                        # Extract trim - look for patterns like "4", "Base", "4S", "Turbo", "S"
-                        # These typically appear after "A/T AWD" or "A/T RWD" and before body type
+                        engine = ''
                         trim = ''
                         
-                        # Pattern 1: After A/T and AWD/RWD, before body type (Hatchback, Coupe, etc.)
-                        # Example: "A/T AWD 4 Hatchback" -> trim is "4"
-                        # Example: "A/T RWD Base Hatchback" -> trim is "Base"
-                        trim_match = re.search(r'(?:A/T|M/T)\s+(?:AWD|RWD)\s+([A-Za-z0-9]+?)(?:\s+(?:Hatchback|Coupe|Sedan|SUV|Convertible|Wagon|Targa|Cabriolet)|$)', vehicle_desc, re.I)
-                        if trim_match:
-                            potential_trim = trim_match.group(1).strip()
-                            # Validate it's a trim (not part of engine or other info)
-                            if potential_trim and potential_trim not in ['AWD', 'RWD', 'A/T', 'M/T']:
-                                trim = potential_trim
-                        
-                        # Pattern 2: Look for common trim words anywhere in description
-                        if not trim:
-                            trim_words = ['Base', 'S', '4S', 'Turbo', 'GTS', 'GT', 'Targa', 'Cabriolet', 'Coupe']
-                            for trim_word in trim_words:
-                                # Make sure it's not part of another word
-                                trim_pattern = r'\b' + re.escape(trim_word) + r'\b'
-                                if re.search(trim_pattern, vehicle_desc, re.I):
-                                    trim = trim_word
-                                    break
-            
-                        # Pattern 3: Look for standalone numbers after AWD/RWD (like "4" in "AWD 4")
-                        if not trim:
-                            num_match = re.search(r'(?:AWD|RWD)\s+(\d+)(?:\s+(?:Hatchback|Coupe|Sedan|SUV|Convertible|Wagon|Targa|Cabriolet)|$)', vehicle_desc, re.I)
-                            if num_match:
-                                trim = num_match.group(1).strip()
-                        
-                        # Extract years from years_cell
-                        year_links = years_cell.find_all('a')
-                        years = []
-                        if year_links:
-                            for link in year_links:
-                                year_text = link.get_text(strip=True)
-                                # Extract 4-digit year
-                                year_match = re.search(r'(\d{4})', year_text)
-                                if year_match:
-                                    years.append(year_match.group(1))
+                        # Attempt to extract engine and trim more robustly (adapted for Porsche)
+                        engine_match = re.search(r'(\d+\.?\d*L\s*(?:V\d|I\d|Turbo|HYBRID)?(?:\s*MILD HYBRID EV-GAS \(MHEV\))?(?:\s*EV-GAS \(MHEV\))?(?:\s*GAS)?(?:\s*ELECTRIC)?(?:\s*A/T|\s*M/T|\s*CVT|\s*AUTO|\s*MANUAL)?)', parse_text, re.IGNORECASE)
+                        if engine_match:
+                            engine = engine_match.group(1).strip()
+                            # Remove engine part from parse_text to isolate trim
+                            trim_start_index = parse_text.find(engine) + len(engine)
+                            trim = parse_text[trim_start_index:].strip()
+                            # Remove model from trim if it's still there
+                            if trim.startswith(model):
+                                trim = trim[len(model):].strip()
                         else:
-                            # Fallback: extract years from text
-                            years_text = years_cell.get_text(strip=True)
-                            year_matches = re.findall(r'(\d{4})', years_text)
-                            years = year_matches
+                            # If no engine found, assume rest is trim after model
+                            if len(words) > 1:
+                                trim = ' '.join(words[1:]).strip()
                         
-                        # Create fitment entry for each year
                         if years:
                             for year in years:
                                 product_data['fitments'].append({
@@ -1072,15 +1177,28 @@ class PorscheScraper(BaseScraperWithExtension):
                                     'trim': trim,
                                     'engine': engine
                                 })
+                            self.logger.info(f"🚗 Row {idx+1}: Found {len(years)} fitment(s): {model} ({', '.join(years)})")
                         else:
-                            # If no years found, create one entry without year
                             product_data['fitments'].append({
-                                'year': '',
-                                'make': make,
-                                'model': model,
-                                'trim': trim,
-                                'engine': engine
+                                'year': '', 'make': make, 'model': model, 'trim': trim, 'engine': engine
                             })
+                            self.logger.info(f"🚗 Row {idx+1}: Found 1 fitment (no year): {model}")
+                    except Exception as row_parse_error:
+                        self.logger.warning(f"⚠️ Error parsing fitment row {idx+1} via Selenium: {str(row_parse_error)}")
+                        self.logger.debug(traceback.format_exc())
+            else:
+                self.logger.warning("⚠️ No fitment rows found for processing, even after dynamic interaction attempts.")
+            
+            # If no fitments found, still return the product with empty fitment
+            if not product_data['fitments']:
+                self.logger.warning(f"⚠️ No fitment data found for {product_data['title']}")
+                product_data['fitments'].append({
+                    'year': '',
+                    'make': '',
+                    'model': '',
+                    'trim': '',
+                    'engine': ''
+                })
             
             # Fallback: Try div#fitment table (old structure)
             if not product_data['fitments']:
