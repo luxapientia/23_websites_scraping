@@ -864,7 +864,7 @@ class JaguarScraper(BaseScraperWithExtension):
                                         if valid_elements:
                                             fitment_row_elements = valid_elements
                                             self.logger.info(f"✓ Found {len(fitment_row_elements)} valid fitment rows via {selector}")
-                                            break
+                                    break
                                 except Exception as e:
                                     continue
                             
