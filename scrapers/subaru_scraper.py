@@ -1145,196 +1145,136 @@ class SubaruScraper(BaseScraperWithExtension):
             
             # Extract fitment data from Selenium elements or fallback to HTML
             if selenium_extraction_success and fitment_rows_elements:
-                self.logger.info(f"🔍 Processing {len(fitment_rows_elements)} fitment rows...")
+                self.logger.info(f"🔍 Processing {len(fitment_rows_elements)} fitment rows from Selenium WebElements...")
                 for idx, row_element in enumerate(fitment_rows_elements):
                     try:
+                        # Get outerHTML of the WebElement and parse with BeautifulSoup
                         row_html = row_element.get_attribute('outerHTML')
                         if not row_html:
                             continue
                         
                         row_soup = BeautifulSoup(row_html, 'lxml')
                         
-                        # Handle table structure
+                        # Handle both table rows (tr) and div structures
+                        vehicle_text = ''
+                        years = []
+                        
+                        # Check if this is a table row (tr)
                         if row_soup.name == 'tr' or row_soup.find('tr'):
+                            # Table structure: extract from table cells (td)
                             tds = row_soup.find_all('td')
-                            if len(tds) >= 1:
+                            if len(tds) >= 2:
+                                # First cell typically has vehicle description, second has years
                                 vehicle_text = tds[0].get_text(strip=True)
-                                years = []
-                                if len(tds) >= 2:
-                                    years_cell = tds[1]
-                                    year_links = years_cell.find_all('a', href=True)
-                                    for link in year_links:
-                                        href = link.get('href', '')
-                                        year_match = re.search(r'/p/Subaru__/(\d{4})', href)
-                                        if year_match:
-                                            years.append(year_match.group(1))
-                                        else:
-                                            link_text = link.get_text(strip=True)
-                                            if link_text and link_text.isdigit() and len(link_text) == 4:
-                                                years.append(link_text)
-                                    if not years:
-                                        years_text = years_cell.get_text(strip=True)
-                                        year_matches = re.findall(r'\b(\d{4})\b', years_text)
-                                        years = [y for y in year_matches if 1900 <= int(y) <= 2100]
+                                years_cell = tds[1]
+                                # Extract years from links or text
+                                year_links = years_cell.find_all('a', href=True)
+                                for link in year_links:
+                                    href = link.get('href', '')
+                                    year_match = re.search(r'/p/Subaru_(\d{4})', href)
+                                    if year_match:
+                                        years.append(year_match.group(1))
+                                    else:
+                                        link_text = link.get_text(strip=True)
+                                        if link_text and link_text.isdigit() and len(link_text) == 4:
+                                            years.append(link_text)
+                                if not years:
+                                    years_text = years_cell.get_text(strip=True)
+                                    year_matches = re.findall(r'\b(\d{4})\b', years_text)
+                                    years = [y for y in year_matches if 1900 <= int(y) <= 2100]
+                        else:
+                            # Div structure: use whatThisFitsFitment and whatThisFitsYears
+                            fitment_div = row_soup.find('div', class_=lambda x: x and ('whatThisFitsFitment' in str(x) if x else False))
+                            if not fitment_div:
+                                # Try finding by any div with the class
+                                fitment_div = row_soup.find('div', class_=re.compile(r'whatThisFitsFitment', re.I))
+                            
+                            if not fitment_div:
+                                continue
+                            
+                            vehicle_span = fitment_div.find('span')
+                            if not vehicle_span:
+                                continue
+                            
+                            vehicle_text = vehicle_span.get_text(strip=True)
+                            if not vehicle_text:
+                                continue
+                            
+                            # Find years using Selenium directly from the row element (more reliable)
+                            try:
+                                years_div_element = row_element.find_element(By.CSS_SELECTOR, 'div.whatThisFitsYears')
+                                year_links = years_div_element.find_elements(By.TAG_NAME, 'a')
                                 
-                                if vehicle_text:
-                                    make = 'Subaru'
-                                    parse_text = vehicle_text.replace('Subaru ', '').strip()
-                                    words = parse_text.split()
-                                    model = words[0] if words else ''
-                                    
-                                    # Extract engine and trim from vehicle description
-                                    engine = ''
-                                    trim = ''
-                                    
-                                    # Pattern 1: Extract engine (e.g., "2.5L CVT", "3.6L V6", "2.0L Turbo")
-                                    engine_match = re.search(r'(\d+\.?\d*L\s*(?:V\d|I\d|CVT|Turbo|HYBRID)?(?:\s*MILD HYBRID EV-GAS \(MHEV\))?(?:\s*EV-GAS \(MHEV\))?(?:\s*GAS)?(?:\s*ELECTRIC)?(?:\s*A/T|\s*M/T|\s*CVT|\s*AUTO|\s*MANUAL)?)', parse_text, re.IGNORECASE)
-                                    if engine_match:
-                                        engine = engine_match.group(1).strip()
-                                        # Remove engine part from parse_text to isolate trim
-                                        engine_start = parse_text.find(engine)
-                                        engine_end = engine_start + len(engine)
-                                        remaining_text = parse_text[engine_end:].strip()
-                                        
-                                        # Extract trim from remaining text
-                                        # Pattern 1: Look for trim after AWD/FWD/RWD
-                                        trim_match = re.search(r'(?:AWD|FWD|RWD|4WD)\s+([A-Za-z0-9\s]+?)(?:\s+(?:Sedan|SUV|Hatchback|Coupe|Convertible|Wagon|Truck|Crossover)|$)', remaining_text, re.I)
-                                        if trim_match:
-                                            potential_trim = trim_match.group(1).strip()
-                                            trim_words_to_remove = ['AWD', 'FWD', 'RWD', '4WD', 'A/T', 'M/T', 'CVT', 'AUTO', 'MANUAL']
-                                            for word in trim_words_to_remove:
-                                                potential_trim = re.sub(r'\b' + re.escape(word) + r'\b', '', potential_trim, flags=re.I).strip()
-                                            if potential_trim:
-                                                trim = potential_trim
-                                        
-                                        # Pattern 2: Look for common Subaru trim keywords
-                                        if not trim:
-                                            subaru_trim_keywords = [
-                                                'Plus', 'Premium', 'Limited', 'Touring', 'Base', 'Sport', 
-                                                'XT', 'STI', 'WRX', 'Onyx', 'Wilderness', 'Outdoor', 
-                                                'Convenience', 'GT', 'SE', 'LE'
-                                            ]
-                                            for trim_keyword in subaru_trim_keywords:
-                                                trim_pattern = r'\b' + re.escape(trim_keyword) + r'\b'
-                                                if re.search(trim_pattern, remaining_text, re.I):
-                                                    trim = trim_keyword
-                                                    break
-                                        
-                                        # Pattern 3: If no specific trim found, take everything after engine/transmission/drivetrain
-                                        if not trim:
-                                            trim_candidate = re.sub(r'\s*(?:AWD|FWD|RWD|4WD)\s*', ' ', remaining_text, flags=re.I)
-                                            trim_candidate = re.sub(r'\s*(?:Sedan|SUV|Hatchback|Coupe|Convertible|Wagon|Truck|Crossover)\s*$', '', trim_candidate, flags=re.I)
-                                            trim_candidate = trim_candidate.strip()
-                                            if trim_candidate and len(trim_candidate) > 0:
-                                                trim = trim_candidate
+                                for link in year_links:
+                                    href = link.get_attribute('href') or ''
+                                    year_match = re.search(r'/p/Subaru_(\d{4})', href)
+                                    if year_match:
+                                        years.append(year_match.group(1))
                                     else:
-                                        # No engine pattern found, try to extract trim from common patterns
-                                        subaru_trim_keywords = [
-                                            'Plus', 'Premium', 'Limited', 'Touring', 'Base', 'Sport', 
-                                            'XT', 'STI', 'WRX', 'Onyx', 'Wilderness', 'Outdoor', 
-                                            'Convenience', 'GT', 'SE', 'LE'
-                                        ]
-                                        for trim_keyword in subaru_trim_keywords:
-                                            trim_pattern = r'\b' + re.escape(trim_keyword) + r'\b'
-                                            if re.search(trim_pattern, parse_text, re.I):
-                                                trim = trim_keyword
-                                                break
-                                        
-                                        # If still no trim, and we have more than just model, use rest as trim
-                                        if not trim and len(words) > 1:
-                                            remaining_words = words[1:]
-                                            filtered_words = []
-                                            skip_words = ['AWD', 'FWD', 'RWD', '4WD', 'A/T', 'M/T', 'CVT', 'AUTO', 'MANUAL', 
-                                                          'Sedan', 'SUV', 'Hatchback', 'Coupe', 'Convertible', 'Wagon', 'Truck', 'Crossover']
-                                            for word in remaining_words:
-                                                if word.upper() not in [w.upper() for w in skip_words]:
-                                                    filtered_words.append(word)
-                                            if filtered_words:
-                                                trim = ' '.join(filtered_words).strip()
+                                        # Try text content
+                                        link_text = link.text.strip()
+                                        if link_text and link_text.isdigit() and len(link_text) == 4:
+                                            years.append(link_text)
+                                
+                                # If no links, try text content
+                                if not years:
+                                    years_text = years_div_element.text
+                                    year_matches = re.findall(r'\b(\d{4})\b', years_text)
+                                    years = [y for y in year_matches if 1900 <= int(y) <= 2100]
+                            except Exception as year_error:
+                                # Fallback: try finding years div in BeautifulSoup
+                                try:
+                                    years_div = row_soup.find('div', class_=lambda x: x and ('whatThisFitsYears' in str(x) if x else False))
+                                    if not years_div:
+                                        years_div = row_soup.find('div', class_=re.compile(r'whatThisFitsYears', re.I))
                                     
-                                    if years:
-                                        for year in years:
-                                            product_data['fitments'].append({
-                                                'year': year,
-                                                'make': make,
-                                                'model': model,
-                                                'trim': trim,
-                                                'engine': engine
-                                            })
-                                    else:
-                                        product_data['fitments'].append({
-                                            'year': '',
-                                            'make': make,
-                                            'model': model,
-                                            'trim': trim,
-                                            'engine': engine
-                                        })
-                    except Exception as row_error:
-                        self.logger.debug(f"Error parsing fitment row {idx+1}: {str(row_error)}")
-                        continue
-            
-            # Fallback: Try BeautifulSoup parsing if Selenium extraction failed
-            if not product_data['fitments']:
-                fitment_container = soup.find('div', class_='col-md-12')
-                if fitment_container:
-                    fitment_rows = fitment_container.find_all('div', class_='col-lg-12')
-                else:
-                    fitment_rows = soup.find_all('div', class_='col-lg-12')
-                
-                for row in fitment_rows:
-                    fitment_cell = row.find('div', class_='whatThisFitsFitment')
-                    years_cell = row.find('div', class_='whatThisFitsYears')
-                    
-                    if fitment_cell and years_cell:
-                        vehicle_desc = fitment_cell.get_text(strip=True)
-                        if not vehicle_desc:
+                                    if years_div:
+                                        year_links = years_div.find_all('a', href=True)
+                                        for link in year_links:
+                                            href = link.get('href', '')
+                                            year_match = re.search(r'/p/Subaru_(\d{4})', href)
+                                            if year_match:
+                                                years.append(year_match.group(1))
+                                            else:
+                                                link_text = link.get_text(strip=True)
+                                                if link_text and link_text.isdigit() and len(link_text) == 4:
+                                                    years.append(link_text)
+                                        if not years:
+                                            years_text = years_div.get_text(strip=True)
+                                            year_matches = re.findall(r'\b(\d{4})\b', years_text)
+                                            years = [y for y in year_matches if 1900 <= int(y) <= 2100]
+                                except Exception as fallback_error:
+                                    self.logger.debug(f"Error extracting years (both methods): {str(fallback_error)}")
+                        
+                        if not vehicle_text:
                             continue
                         
+                        # Parse vehicle_text
                         make = 'Subaru'
-                        vehicle_desc_clean = re.sub(r'^Subaru\s+', '', vehicle_desc, flags=re.I).strip()
-                        words = vehicle_desc_clean.split()
+                        parse_text = vehicle_text
+                        if parse_text.startswith('Subaru '):
+                            parse_text = parse_text[7:].strip()
+                        
+                        words = parse_text.split()
                         model = words[0] if words else ''
                         
-                        engine_match = re.search(r'(\d+\.?\d*L\s+[A-Z0-9/]+(?:\s+[A-Z0-9/]+)?)', vehicle_desc_clean, re.I)
-                        engine = engine_match.group(1).strip() if engine_match else ''
-                        
+                        engine = ''
                         trim = ''
-                        if engine:
-                            trim_text = vehicle_desc_clean
-                            trim_text = re.sub(r'^' + re.escape(model) + r'\s+', '', trim_text, flags=re.I)
-                            trim_text = re.sub(r'^' + re.escape(engine) + r'\s+', '', trim_text, flags=re.I)
-                            trim = trim_text.strip()
-                        else:
-                            trim_text = vehicle_desc_clean
-                            trim_text = re.sub(r'^' + re.escape(model) + r'\s+', '', trim_text, flags=re.I)
-                            trim_match = re.search(r'\b(Plus|Premium|Limited|Touring|Base|Sport|XT|STI|WRX|Onyx|Wilderness|Outdoor|Convenience)\b', trim_text, re.I)
-                            if trim_match:
-                                trim = trim_match.group(1).strip()
-                            else:
-                                trim = trim_text.strip()
                         
-                        year_links = years_cell.find_all('a')
-                        years = []
-                        if year_links:
-                            for link in year_links:
-                                year_text = link.get_text(strip=True)
-                                year_match = re.search(r'(\d{4})', year_text)
-                                if year_match:
-                                    years.append(year_match.group(1))
+                        # Attempt to extract engine and trim more robustly (adapted for Subaru)
+                        engine_match = re.search(r'(\d+\.?\d*L\s*(?:V\d|I\d|Turbo|HYBRID)?(?:\s*MILD HYBRID EV-GAS \(MHEV\))?(?:\s*EV-GAS \(MHEV\))?(?:\s*GAS)?(?:\s*ELECTRIC)?(?:\s*A/T|\s*M/T|\s*CVT|\s*AUTO|\s*MANUAL)?)', parse_text, re.IGNORECASE)
+                        if engine_match:
+                            engine = engine_match.group(1).strip()
+                            # Remove engine part from parse_text to isolate trim
+                            trim_start_index = parse_text.find(engine) + len(engine)
+                            trim = parse_text[trim_start_index:].strip()
+                            # Remove model from trim if it's still there
+                            if trim.startswith(model):
+                                trim = trim[len(model):].strip()
                         else:
-                            years_text = years_cell.get_text(strip=True)
-                            year_range_matches = re.findall(r'(\d{4})\s*-\s*(\d{4})', years_text)
-                            if year_range_matches:
-                                for start_year, end_year in year_range_matches:
-                                    try:
-                                        start = int(start_year)
-                                        end = int(end_year)
-                                        years.extend([str(y) for y in range(start, end + 1)])
-                                    except:
-                                        pass
-                            else:
-                                year_matches = re.findall(r'(\d{4})', years_text)
-                                years = year_matches
+                            # If no engine found, assume rest is trim after model
+                            if len(words) > 1:
+                                trim = ' '.join(words[1:]).strip()
                         
                         if years:
                             for year in years:
@@ -1345,16 +1285,22 @@ class SubaruScraper(BaseScraperWithExtension):
                                     'trim': trim,
                                     'engine': engine
                                 })
+                            self.logger.info(f"🚗 Row {idx+1}: Found {len(years)} fitment(s): {model} ({', '.join(years)})")
                         else:
                             product_data['fitments'].append({
-                                'year': '',
-                                'make': make,
-                                'model': model,
-                                'trim': trim,
-                                'engine': engine
+                                'year': '', 'make': make, 'model': model, 'trim': trim, 'engine': engine
                             })
+                            self.logger.info(f"🚗 Row {idx+1}: Found 1 fitment (no year): {model}")
+                    except Exception as row_parse_error:
+                        self.logger.warning(f"⚠️ Error parsing fitment row {idx+1} via Selenium: {str(row_parse_error)}")
+                        self.logger.debug(traceback.format_exc())
             
+            else:
+                self.logger.warning("⚠️ No fitment rows found for processing, even after dynamic interaction attempts.")
+            
+            # If no fitments found, still return the product with empty fitment
             if not product_data['fitments']:
+                self.logger.warning(f"⚠️ No fitment data found for {product_data['title']}")
                 product_data['fitments'].append({
                     'year': '',
                     'make': '',
