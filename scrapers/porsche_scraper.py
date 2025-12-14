@@ -950,21 +950,11 @@ class PorscheScraper(BaseScraperWithExtension):
                         else:
                             self.logger.warning("⚠️ Tab panel may not have loaded completely, continuing anyway...")
                         
-                        # Step 2.5: WAIT for all initial fitment data in tab panel to be fully loaded
-                        self.logger.info("🔍 Step 2.5: Waiting for all initial fitment data to load completely in tab panel...")
-                        initial_fitment_loaded = self._wait_for_fitment_data_loaded(timeout=30, min_rows=1)
-                        if initial_fitment_loaded:
-                            self.logger.info("✓ Initial fitment data loaded completely")
-                        else:
-                            self.logger.warning("⚠️ Initial fitment data may not have loaded completely, continuing anyway...")
+                        # Brief wait to ensure tab panel is stable
+                        time.sleep(1)
                         
-                        # Additional wait to ensure initial data is stable before clicking Show More
-                        self.logger.info("⏳ Waiting 2 seconds to ensure initial data is stable...")
-                        time.sleep(2)
-                        
-                        # Step 3: ALWAYS try to click "Show More" button after initial fitment data is loaded
-                        # This is a critical step - we must proceed to click Show More
-                        self.logger.info("🔍 Step 3: Looking for 'Show More' button (after initial data loaded)...")
+                        # Step 3: Look for and click "Show More" button if present
+                        self.logger.info("🔍 Step 3: Looking for 'Show More' button in fitment tab panel...")
                         show_more_clicked = self._find_and_click_show_more(max_attempts=5, wait_between_attempts=2)
                         
                         if show_more_clicked:
@@ -989,8 +979,8 @@ class PorscheScraper(BaseScraperWithExtension):
                             self.logger.warning("⚠️ Fitment data may not have loaded completely, continuing with extraction...")
                         
                         # Additional wait to ensure everything is stable before extraction
-                        self.logger.info("⏳ Waiting 2 seconds to ensure all data is stable before extraction...")
-                        time.sleep(2)
+                        self.logger.info("⏳ Waiting 5 seconds to ensure all data is stable before extraction...")
+                        time.sleep(5)
                         
                         # Get updated HTML after all interactions
                         html = self.driver.page_source
