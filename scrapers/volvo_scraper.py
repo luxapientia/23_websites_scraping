@@ -1256,129 +1256,129 @@ class VolvoScraper(BaseScraperWithExtension):
                 fitment_container = soup.find('div', class_='whatThisFitsContainer')
                 if not fitment_container:
                     fitment_container = soup.find('div', class_='col-md-12')
-                
-                if fitment_container:
-                    # Find all fitment rows (div.col-lg-12)
-                    fitment_rows = fitment_container.find_all('div', class_='col-lg-12')
-                    for row in fitment_rows:
-                        try:
-                            # Extract fitment text (model, trim, engine)
-                            fitment_elem = row.find('div', class_='whatThisFitsFitment')
-                            if not fitment_elem:
-                                continue
+            
+            if fitment_container:
+                # Find all fitment rows (div.col-lg-12)
+                fitment_rows = fitment_container.find_all('div', class_='col-lg-12')
+                for row in fitment_rows:
+                    try:
+                        # Extract fitment text (model, trim, engine)
+                        fitment_elem = row.find('div', class_='whatThisFitsFitment')
+                        if not fitment_elem:
+                            continue
+                        
+                        fitment_span = fitment_elem.find('span')
+                        if not fitment_span:
+                            continue
+                        
+                        fitment_text = fitment_span.get_text(strip=True)
+                        # Remove "Volvo " prefix if present
+                        fitment_text = re.sub(r'^Volvo\s+', '', fitment_text, flags=re.I)
+                        
+                        # Extract years
+                        years_elem = row.find('div', class_='whatThisFitsYears')
+                        years = []
+                        if years_elem:
+                            # Extract from links
+                            year_links = years_elem.find_all('a')
+                            for link in year_links:
+                                year_text = link.get_text(strip=True)
+                                if year_text:
+                                    years.append(year_text)
                             
-                            fitment_span = fitment_elem.find('span')
-                            if not fitment_span:
-                                continue
+                            # Also check for comma-separated text
+                            if not years:
+                                years_span = years_elem.find('span')
+                                if years_span:
+                                    years_text = years_span.get_text(strip=True)
+                                    # Split by comma and extract years
+                                    year_parts = re.split(r',\s*', years_text)
+                                    for part in year_parts:
+                                        # Extract year from text (e.g., "2021", "2022")
+                                        year_match = re.search(r'\b(19|20)\d{2}\b', part)
+                                        if year_match:
+                                            years.append(year_match.group(0))
+                        
+                        # Parse fitment text to extract model, trim, engine
+                        # Similar to Volkswagen parsing
+                        model = ''
+                        trim = ''
+                        engine = ''
+                        
+                        # Extract model (first part, usually ends before engine description)
+                        model_match = re.match(r'^([A-Z0-9\.\-\s]+?)(?:\s+-\s*[A-Z]|\s+-\s*cylinder|\s+\d+\.\d+L)', fitment_text, re.I)
+                        if model_match:
+                            model = model_match.group(1).strip()
+                        else:
+                            # Fallback: extract first word/phrase (usually model name)
+                            first_part = fitment_text.split(' -')[0].strip()
+                            if first_part:
+                                model = first_part
+                        
+                        # Extract transmission and drivetrain info
+                        trans_drive_match = re.search(r'(A/T|M/T)\s+(AWD|RWD|FWD)', fitment_text, re.I)
+                        
+                        # Extract engine (everything between model and transmission)
+                        if trans_drive_match:
+                            # Engine is between model and transmission
+                            engine_start = len(model) if model else 0
+                            engine_end = trans_drive_match.start()
+                            engine_text = fitment_text[engine_start:engine_end].strip()
+                            # Clean up engine text
+                            engine_text = re.sub(r'^[\s\-]+|[\s\-]+$', '', engine_text)
+                            engine = engine_text
                             
-                            fitment_text = fitment_span.get_text(strip=True)
-                            # Remove "Volvo " prefix if present
-                            fitment_text = re.sub(r'^Volvo\s+', '', fitment_text, flags=re.I)
-                            
-                            # Extract years
-                            years_elem = row.find('div', class_='whatThisFitsYears')
-                            years = []
-                            if years_elem:
-                                # Extract from links
-                                year_links = years_elem.find_all('a')
-                                for link in year_links:
-                                    year_text = link.get_text(strip=True)
-                                    if year_text:
-                                        years.append(year_text)
-                                
-                                # Also check for comma-separated text
-                                if not years:
-                                    years_span = years_elem.find('span')
-                                    if years_span:
-                                        years_text = years_span.get_text(strip=True)
-                                        # Split by comma and extract years
-                                        year_parts = re.split(r',\s*', years_text)
-                                        for part in year_parts:
-                                            # Extract year from text (e.g., "2021", "2022")
-                                            year_match = re.search(r'\b(19|20)\d{2}\b', part)
-                                            if year_match:
-                                                years.append(year_match.group(0))
-                            
-                            # Parse fitment text to extract model, trim, engine
-                            # Similar to Volkswagen parsing
-                            model = ''
-                            trim = ''
-                            engine = ''
-                            
-                            # Extract model (first part, usually ends before engine description)
-                            model_match = re.match(r'^([A-Z0-9\.\-\s]+?)(?:\s+-\s*[A-Z]|\s+-\s*cylinder|\s+\d+\.\d+L)', fitment_text, re.I)
-                            if model_match:
-                                model = model_match.group(1).strip()
+                            # Extract trim (everything after transmission/drivetrain, before body type)
+                            trim_start = trans_drive_match.end()
+                            remaining = fitment_text[trim_start:].strip()
+                            # Remove common body type suffixes
+                            remaining = re.sub(r'\s+(Sport\s+Utility|Sedan|Hatchback|Coupe|Convertible|Wagon|SUV)$', '', remaining, flags=re.I)
+                            trim = remaining.strip()
+                        else:
+                            # Fallback: try to find A/T or M/T pattern
+                            at_match = re.search(r'(A/T|M/T)', fitment_text, re.I)
+                            if at_match:
+                                parts = fitment_text.split(at_match.group(0), 1)
+                                if len(parts) == 2:
+                                    before_at = parts[0].strip()
+                                    if model:
+                                        engine = before_at.replace(model, '').strip()
+                                        engine = re.sub(r'^[\s\-]+|[\s\-]+$', '', engine)
+                                    after_at = parts[1].strip()
+                                    after_at = re.sub(r'\s+(Sport\s+Utility|Sedan|Hatchback|Coupe|Convertible|Wagon|SUV)$', '', after_at, flags=re.I)
+                                    trim = after_at.strip()
                             else:
-                                # Fallback: extract first word/phrase (usually model name)
-                                first_part = fitment_text.split(' -')[0].strip()
-                                if first_part:
-                                    model = first_part
-                            
-                            # Extract transmission and drivetrain info
-                            trans_drive_match = re.search(r'(A/T|M/T)\s+(AWD|RWD|FWD)', fitment_text, re.I)
-                            
-                            # Extract engine (everything between model and transmission)
-                            if trans_drive_match:
-                                # Engine is between model and transmission
-                                engine_start = len(model) if model else 0
-                                engine_end = trans_drive_match.start()
-                                engine_text = fitment_text[engine_start:engine_end].strip()
-                                # Clean up engine text
-                                engine_text = re.sub(r'^[\s\-]+|[\s\-]+$', '', engine_text)
-                                engine = engine_text
-                                
-                                # Extract trim (everything after transmission/drivetrain, before body type)
-                                trim_start = trans_drive_match.end()
-                                remaining = fitment_text[trim_start:].strip()
-                                # Remove common body type suffixes
-                                remaining = re.sub(r'\s+(Sport\s+Utility|Sedan|Hatchback|Coupe|Convertible|Wagon|SUV)$', '', remaining, flags=re.I)
-                                trim = remaining.strip()
-                            else:
-                                # Fallback: try to find A/T or M/T pattern
-                                at_match = re.search(r'(A/T|M/T)', fitment_text, re.I)
-                                if at_match:
-                                    parts = fitment_text.split(at_match.group(0), 1)
-                                    if len(parts) == 2:
-                                        before_at = parts[0].strip()
-                                        if model:
-                                            engine = before_at.replace(model, '').strip()
-                                            engine = re.sub(r'^[\s\-]+|[\s\-]+$', '', engine)
-                                        after_at = parts[1].strip()
-                                        after_at = re.sub(r'\s+(Sport\s+Utility|Sedan|Hatchback|Coupe|Convertible|Wagon|SUV)$', '', after_at, flags=re.I)
-                                        trim = after_at.strip()
-                                else:
-                                    # Last resort: split by dashes
-                                    parts = re.split(r'\s+-\s+', fitment_text, 2)
-                                    if len(parts) >= 1:
-                                        model = parts[0].strip()
-                                    if len(parts) >= 2:
-                                        engine = parts[1].strip()
-                                    if len(parts) >= 3:
-                                        trim = parts[2].strip()
-                            
-                            # Create fitment entry for each year
-                            if years:
-                                for year in years:
-                                    product_data['fitments'].append({
-                                        'year': year,
-                                        'make': 'Volvo',
-                                        'model': model,
-                                        'trim': trim,
-                                        'engine': engine
-                                    })
-                            else:
-                                # If no years found, create one entry with empty year
+                                # Last resort: split by dashes
+                                parts = re.split(r'\s+-\s+', fitment_text, 2)
+                                if len(parts) >= 1:
+                                    model = parts[0].strip()
+                                if len(parts) >= 2:
+                                    engine = parts[1].strip()
+                                if len(parts) >= 3:
+                                    trim = parts[2].strip()
+                        
+                        # Create fitment entry for each year
+                        if years:
+                            for year in years:
                                 product_data['fitments'].append({
-                                    'year': '',
+                                    'year': year,
                                     'make': 'Volvo',
                                     'model': model,
                                     'trim': trim,
                                     'engine': engine
                                 })
-                        except Exception as e:
-                            self.logger.debug(f"Error parsing fitment row: {str(e)}")
-                            continue
+                        else:
+                            # If no years found, create one entry with empty year
+                            product_data['fitments'].append({
+                                'year': '',
+                                'make': 'Volvo',
+                                'model': model,
+                                'trim': trim,
+                                'engine': engine
+                            })
+                    except Exception as e:
+                        self.logger.debug(f"Error parsing fitment row: {str(e)}")
+                        continue
             
             # If no fitments found, still return the product with empty fitment
             if not product_data['fitments']:

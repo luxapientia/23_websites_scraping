@@ -51,11 +51,12 @@ class KiaScraper(BaseScraper):
     
     def _search_for_wheels(self):
         """
-        Visit all three wheel category listing pages and extract all product URLs, handling pagination
+        Visit all four wheel category listing pages and extract all product URLs, handling pagination
         URLs:
-        1. https://www.kiapartsnow.com/oem-kia-wheel_cover.html
-        2. https://www.kiapartsnow.com/oem-kia-spare_wheel.html
-        3. https://www.kiapartsnow.com/accessories/kia-wheels.html
+        1. https://www.kiapartsnow.com/oem-kia-wheel_cover.html (127 wheel covers)
+        2. https://www.kiapartsnow.com/oem-kia-spare_wheel.html (370 spare wheels)
+        3. https://www.kiapartsnow.com/accessories/kia-wheels.html (7 genuine kia wheels)
+        4. https://www.kiapartsnow.com/accessories/kia-spare_wheel_kit.html (21 Genuine Kia Spare Wheel Kits)
         """
         product_urls = []
         
@@ -63,11 +64,12 @@ class KiaScraper(BaseScraper):
             if not self.driver:
                 self.ensure_driver()
             
-            # All three category URLs to visit one by one
+            # All four category URLs to visit one by one
             category_urls = [
                 f"{self.base_url}/oem-kia-wheel_cover.html",
                 f"{self.base_url}/oem-kia-spare_wheel.html",
                 f"{self.base_url}/accessories/kia-wheels.html",
+                f"{self.base_url}/accessories/kia-spare_wheel_kit.html",
             ]
             
             self.logger.info(f"Starting to visit {len(category_urls)} category pages one by one...")
@@ -184,33 +186,95 @@ class KiaScraper(BaseScraper):
                     # Extract product links from current page
                     self.logger.info(f"Extracting products from page {page_num}/{total_pages}...")
                     
-                    # Product URLs: /genuine/kia-{name}~{part}.html
-                    product_links = soup.find_all('a', href=re.compile(r'/genuine/kia-.*~.*\.html'))
+                    # Strategy 1: Use Selenium to find all links (more reliable for dynamic content)
+                    found_urls = set()
+                    if self.driver:
+                        try:
+                            # Find all links that match the product URL pattern
+                            selenium_links = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='/genuine/kia-']")
+                            for elem in selenium_links:
+                                try:
+                                    href = elem.get_attribute('href')
+                                    if href and '/genuine/kia-' in href and '~' in href and href.endswith('.html'):
+                                        # Normalize URL
+                                        if '#' in href:
+                                            href = href.split('#')[0]
+                                        if '?' in href:
+                                            href = href.split('?')[0]
+                                        href = href.rstrip('/')
+                                        
+                                        # Filter out category/listing pages
+                                        if not any(pattern in href for pattern in ['/accessories/', '/category/', '/oem-kia-']):
+                                            found_urls.add(href)
+                                except:
+                                    continue
+                            
+                            self.logger.info(f"Found {len(found_urls)} product URLs via Selenium")
+                        except Exception as e:
+                            self.logger.debug(f"Selenium link extraction failed: {str(e)}")
                     
+                    # Strategy 2: Use BeautifulSoup as fallback
+                    if not found_urls:
+                        # Product URLs: /genuine/kia-{name}~{part}.html
+                        product_links = soup.find_all('a', href=re.compile(r'/genuine/kia-.*~.*\.html'))
+                        
+                        for link in product_links:
+                            href = link.get('href', '')
+                            if href:
+                                full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                                
+                                # Remove fragment and query params
+                                if '#' in full_url:
+                                    full_url = full_url.split('#')[0]
+                                if '?' in full_url:
+                                    full_url = full_url.split('?')[0]
+                                
+                                full_url = full_url.rstrip('/')
+                                
+                                # Only collect individual product pages
+                                if '/genuine/kia-' in full_url and '~' in full_url and full_url.endswith('.html'):
+                                    # Filter out category/listing pages
+                                    if not any(pattern in full_url for pattern in ['/accessories/', '/category/', '/oem-kia-']):
+                                        found_urls.add(full_url)
+                        
+                        self.logger.info(f"Found {len(found_urls)} product URLs via BeautifulSoup")
+                    
+                    # Strategy 3: Try alternative patterns (in case links use different format)
+                    if not found_urls and self.driver:
+                        try:
+                            # Try finding links by text content or other attributes
+                            all_links = self.driver.find_elements(By.TAG_NAME, 'a')
+                            for link in all_links:
+                                try:
+                                    href = link.get_attribute('href') or ''
+                                    if href and '/genuine/kia-' in href.lower() and '~' in href and '.html' in href.lower():
+                                        # Normalize URL
+                                        if '#' in href:
+                                            href = href.split('#')[0]
+                                        if '?' in href:
+                                            href = href.split('?')[0]
+                                        href = href.rstrip('/')
+                                        
+                                        # Filter out category/listing pages
+                                        if not any(pattern in href.lower() for pattern in ['/accessories/', '/category/', '/oem-kia-']):
+                                            found_urls.add(href)
+                                except:
+                                    continue
+                            
+                            if found_urls:
+                                self.logger.info(f"Found {len(found_urls)} product URLs via alternative pattern matching")
+                        except Exception as e:
+                            self.logger.debug(f"Alternative link extraction failed: {str(e)}")
+                    
+                    # Add found URLs to the collection
                     page_count = 0
-                    for link in product_links:
-                        href = link.get('href', '')
-                        if href:
-                            full_url = href if href.startswith('http') else f"{self.base_url}{href}"
-                            
-                            # Remove fragment and query params
-                            if '#' in full_url:
-                                full_url = full_url.split('#')[0]
-                            if '?' in full_url:
-                                full_url = full_url.split('?')[0]
-                            
-                            full_url = full_url.rstrip('/')
-                            
-                            # Only collect individual product pages
-                            if '/genuine/kia-' in full_url and '~' in full_url and full_url.endswith('.html'):
-                                # Filter out category/listing pages
-                                if not any(pattern in full_url for pattern in ['/accessories/', '/category/', '/oem-kia-']):
-                                    if full_url not in existing_urls and full_url not in new_urls:
-                                        new_urls.append(full_url)
-                                        existing_urls.append(full_url)
-                                        page_count += 1
+                    for full_url in found_urls:
+                        if full_url not in existing_urls and full_url not in new_urls:
+                            new_urls.append(full_url)
+                            existing_urls.append(full_url)
+                            page_count += 1
                     
-                    self.logger.info(f"Page {page_num}/{total_pages}: Found {len(product_links)} product links, {page_count} new unique URLs (Category total: {len(new_urls)})")
+                    self.logger.info(f"Page {page_num}/{total_pages}: Found {len(found_urls)} product links, {page_count} new unique URLs (Category total: {len(new_urls)})")
                     
                     # Small delay between pages
                     if page_num < total_pages:
