@@ -1458,6 +1458,13 @@ class BaseScraper(ABC):
         
         # Normalize hyphens and underscores to spaces for better matching
         text = re.sub(r'[-_]', ' ', text)
+        
+        # Add space before "wheel" when it's attached to alphanumeric characters
+        # This handles cases like "529102T550Wheel" -> "529102t550 wheel"
+        text = re.sub(r'([a-z0-9])(wheel)', r'\1 \2', text, flags=re.IGNORECASE)
+        
+        # Also add space after "wheel" when followed by uppercase letters (for "WheelAssembly" -> "wheel assembly")
+        text = re.sub(r'(wheel)([a-z])', r'\1 \2', text, flags=re.IGNORECASE)
 
         # DEBUG INFO
         self.logger.info(f"🔍 DEBUG: title='{title}'")
