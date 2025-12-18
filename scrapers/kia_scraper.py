@@ -92,6 +92,13 @@ class KiaScraper(BaseScraper):
             
             self.logger.info(f"All {len(category_urls)} category pages processed. Total unique product URLs found: {len(product_urls)}")
             
+            # Additional discovery method - try to find all product URLs from sitemap or category index
+            self.logger.info("Attempting additional product URL discovery...")
+            additional_urls = self._discover_additional_product_urls(product_urls)
+            if additional_urls:
+                product_urls.extend(additional_urls)
+                self.logger.info(f"Found {len(additional_urls)} additional product URLs via discovery method")
+            
         except Exception as e:
             self.logger.error(f"Error searching for wheels: {str(e)}")
             import traceback
@@ -127,14 +134,28 @@ class KiaScraper(BaseScraper):
             
             # Wait for product links to appear
             try:
-                WebDriverWait(self.driver, 10).until(
+                WebDriverWait(self.driver, 15).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/genuine/kia-']"))
                 )
             except:
                 self.logger.warning("Product links not found immediately, continuing anyway...")
             
-            # Scroll to load all products on the first page (if lazy loading)
+            # IMPROVED: More thorough scrolling to load ALL lazy-loaded content
+            self.logger.info("Scrolling to load all products...")
+            for scroll_round in range(5):  # Scroll multiple times
+                # Scroll to bottom
+                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                time.sleep(1.5)
+                # Scroll back up a bit
+                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight * 0.7);")
+                time.sleep(0.5)
+                # Scroll to bottom again
+                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                time.sleep(1.5)
+            
+            # Final scroll using existing method
             self._scroll_to_load_content()
+            time.sleep(3)  # Additional wait for all content to load
             
             # Get updated HTML after scrolling
             html = self.driver.page_source
@@ -154,6 +175,7 @@ class KiaScraper(BaseScraper):
                 self.logger.debug(f"Could not determine total pages: {str(e)}, defaulting to 1")
             
             # Extract products from all pages
+            consecutive_zero_count = 0  # Track consecutive pages with zero new products
             for page_num in range(1, total_pages + 1):
                 try:
                     if page_num > 1:
@@ -169,8 +191,23 @@ class KiaScraper(BaseScraper):
                                 self.logger.warning(f"Page {page_num} content too short, skipping")
                                 continue
                             
-                            # Scroll to load all products on this page
+                            # IMPROVED: More thorough scrolling to load ALL lazy-loaded content
+                            self.logger.info("Scrolling to load all products on this page...")
+                            for scroll_round in range(5):  # Scroll multiple times
+                                # Scroll to bottom
+                                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                                time.sleep(1.5)
+                                # Scroll back up a bit
+                                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight * 0.7);")
+                                time.sleep(0.5)
+                                # Scroll to bottom again
+                                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                                time.sleep(1.5)
+                            
+                            # Final scroll using existing method
                             self._scroll_to_load_content()
+                            time.sleep(3)  # Additional wait for all content to load
+                            
                             pag_html = self.driver.page_source
                             soup = BeautifulSoup(pag_html, 'lxml')
                         except Exception as e:
@@ -276,6 +313,17 @@ class KiaScraper(BaseScraper):
                     
                     self.logger.info(f"Page {page_num}/{total_pages}: Found {len(found_urls)} product links, {page_count} new unique URLs (Category total: {len(new_urls)})")
                     
+                    # Check for consecutive zero new products
+                    if page_count == 0:
+                        consecutive_zero_count += 1
+                        self.logger.info(f"No new products found on page {page_num} (consecutive zero count: {consecutive_zero_count}/3)")
+                        if consecutive_zero_count >= 3:
+                            self.logger.info(f"Stopping pagination: Found zero new products {consecutive_zero_count} times consecutively")
+                            break
+                    else:
+                        # Reset counter if we found new products
+                        consecutive_zero_count = 0
+                    
                     # Small delay between pages
                     if page_num < total_pages:
                         time.sleep(random.uniform(1, 2))
@@ -293,6 +341,113 @@ class KiaScraper(BaseScraper):
         
         return new_urls
     
+    def _discover_additional_product_urls(self, existing_urls):
+        """
+        Discover additional product URLs by:
+        1. Trying to find sitemap
+        2. Visiting category index pages
+        3. Finding all links matching /genuine/kia-*~*.html pattern from homepage or category pages
+        """
+        new_urls = []
+        existing_set = set(existing_urls)
+        
+        try:
+            # Method 1: Try to find sitemap
+            sitemap_urls = [
+                f"{self.base_url}/sitemap.xml",
+                f"{self.base_url}/sitemap_index.xml",
+                f"{self.base_url}/sitemap-products.xml",
+            ]
+            
+            for sitemap_url in sitemap_urls:
+                try:
+                    self.logger.info(f"Trying sitemap: {sitemap_url}")
+                    html = self.get_page(sitemap_url, use_selenium=False, wait_time=1)
+                    if html and 'genuine/kia-' in html:
+                        # Extract URLs from sitemap
+                        try:
+                            import xml.etree.ElementTree as ET
+                            root = ET.fromstring(html)
+                            for url_elem in root.findall('.//{http://www.sitemaps.org/schemas/sitemap/0.9}loc'):
+                                url = url_elem.text
+                                if url and '/genuine/kia-' in url.lower() and '~' in url and '.html' in url.lower():
+                                    if url not in existing_set:
+                                        new_urls.append(url)
+                                        existing_set.add(url)
+                            self.logger.info(f"Found {len(new_urls)} URLs from sitemap")
+                            break
+                        except:
+                            # Try regex extraction if XML parsing fails
+                            urls = re.findall(r'<loc>(https?://[^<]+/genuine/kia-[^<]*~[^<]*\.html)</loc>', html, re.I)
+                            for url in urls:
+                                if url not in existing_set:
+                                    new_urls.append(url)
+                                    existing_set.add(url)
+                            if urls:
+                                self.logger.info(f"Found {len(urls)} URLs from sitemap (regex)")
+                                break
+                except:
+                    continue
+            
+            # Method 2: Visit homepage and find all product links
+            if not new_urls:
+                try:
+                    self.logger.info("Visiting homepage to discover product URLs...")
+                    html = self.get_page(self.base_url, use_selenium=True, wait_time=2)
+                    if html:
+                        # Scroll to load all content
+                        self._scroll_to_load_content()
+                        html = self.driver.page_source
+                        soup = BeautifulSoup(html, 'lxml')
+                        
+                        # Find all links matching the pattern
+                        all_links = soup.find_all('a', href=re.compile(r'/genuine/kia-.*~.*\.html', re.I))
+                        for link in all_links:
+                            href = link.get('href', '')
+                            if href:
+                                full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                                if '#' in full_url:
+                                    full_url = full_url.split('#')[0]
+                                if '?' in full_url:
+                                    full_url = full_url.split('?')[0]
+                                full_url = full_url.rstrip('/')
+                                
+                                if '/genuine/kia-' in full_url.lower() and '~' in full_url and '.html' in full_url.lower():
+                                    if not any(pattern in full_url.lower() for pattern in ['/accessories/', '/category/', '/oem-kia-']):
+                                        if full_url not in existing_set:
+                                            new_urls.append(full_url)
+                                            existing_set.add(full_url)
+                        
+                        if new_urls:
+                            self.logger.info(f"Found {len(new_urls)} product URLs from homepage")
+                except Exception as e:
+                    self.logger.debug(f"Homepage discovery failed: {str(e)}")
+            
+            # Method 3: Try additional category/listing pages that might contain wheel products
+            additional_category_urls = [
+                f"{self.base_url}/oem-parts/kia-wheel.html",
+                f"{self.base_url}/oem-parts/kia-rim.html",
+                f"{self.base_url}/genuine/kia-wheel.html",
+                f"{self.base_url}/genuine/kia-rim.html",
+            ]
+            
+            for cat_url in additional_category_urls:
+                try:
+                    self.logger.info(f"Trying additional category: {cat_url}")
+                    category_products = self._extract_products_from_category(cat_url, existing_urls)
+                    for url in category_products:
+                        if url not in existing_set:
+                            new_urls.append(url)
+                            existing_set.add(url)
+                    if category_products:
+                        self.logger.info(f"Found {len(category_products)} products from {cat_url}")
+                except:
+                    continue
+            
+        except Exception as e:
+            self.logger.debug(f"Additional discovery failed: {str(e)}")
+        
+        return new_urls
     
     def _scroll_to_load_content(self):
         """Scroll page to load lazy-loaded content"""
