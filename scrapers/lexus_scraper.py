@@ -147,7 +147,12 @@ class LexusScraper(BaseScraper):
             except Exception as e:
                 self.logger.debug(f"Could not determine total pages: {str(e)}, defaulting to 1")
             
-            # Extract products from all pages
+            # Lexus scraper must visit all 217 pages regardless of consecutive zeros
+            if total_pages < 217:
+                total_pages = 217
+                self.logger.info(f"Setting total pages to 217 (as required for Lexus scraper)")
+            
+            # Extract products from all pages - visit ALL pages, no early stopping
             for page_num in range(1, total_pages + 1):
                 try:
                     if page_num > 1:
@@ -212,10 +217,9 @@ class LexusScraper(BaseScraper):
                     
                     self.logger.info(f"Page {page_num}/{total_pages}: Found {len(product_links)} product links, {page_count} new unique URLs (Total: {len(product_urls)})")
                     
-                    # If we didn't find any new products, we might have reached the end
-                    if page_count == 0 and page_num > 1:
-                        self.logger.info(f"No new products found on page {page_num}, stopping pagination")
-                        break
+                    # Note: Lexus scraper visits ALL pages (217) regardless of zero new products
+                    if page_count == 0:
+                        self.logger.info(f"No new products found on page {page_num}, but continuing to visit all pages")
                     
                 except Exception as e:
                     self.logger.error(f"Error processing page {page_num}: {str(e)}")

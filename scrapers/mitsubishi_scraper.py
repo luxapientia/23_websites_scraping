@@ -104,7 +104,7 @@ class MitsubishiScraper(BaseScraper):
             page_num = 2
             max_pages = 2000  # Safety limit
             consecutive_empty_pages = 0
-            max_consecutive_empty = 3  # Stop after 3 consecutive pages with no new products
+            max_consecutive_empty = 4  # Stop after 4 consecutive pages with no new products
             
             while page_num <= max_pages:
                 try:

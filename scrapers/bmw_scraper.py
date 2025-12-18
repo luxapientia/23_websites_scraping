@@ -180,7 +180,7 @@ class BMWScraper(BaseScraper):
             page_num = 2
             max_pages = 500
             consecutive_empty_pages = 0
-            max_consecutive_empty = 4
+            max_consecutive_empty = 4  # Stop after 4 consecutive pages with no new products
             
             while page_num <= max_pages:
                 try:
@@ -382,7 +382,7 @@ class BMWScraper(BaseScraper):
                     
                     if not page_loaded:
                         consecutive_empty += 1
-                        if consecutive_empty >= 3:
+                        if consecutive_empty >= 4:
                             break
                         page_num += 1
                         continue
@@ -409,7 +409,7 @@ class BMWScraper(BaseScraper):
                     
                     if new_count == 0:
                         consecutive_empty += 1
-                        if consecutive_empty >= 3:
+                        if consecutive_empty >= 4:
                             break
                     else:
                         consecutive_empty = 0
@@ -420,7 +420,7 @@ class BMWScraper(BaseScraper):
                 except Exception as e:
                     self.logger.debug(f"Error on category page {page_num}: {str(e)}")
                     consecutive_empty += 1
-                    if consecutive_empty >= 3:
+                    if consecutive_empty >= 4:
                         break
                     page_num += 1
                     continue

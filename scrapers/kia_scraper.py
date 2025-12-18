@@ -346,8 +346,8 @@ class KiaScraper(BaseScraper):
                     # Check for consecutive zero new products
                     if page_count == 0:
                         consecutive_zero_count += 1
-                        self.logger.info(f"No new products found on page {page_num} (consecutive zero count: {consecutive_zero_count}/3)")
-                        if consecutive_zero_count >= 3:
+                        self.logger.info(f"No new products found on page {page_num} (consecutive zero count: {consecutive_zero_count}/4)")
+                        if consecutive_zero_count >= 4:
                             self.logger.info(f"Stopping pagination: Found zero new products {consecutive_zero_count} times consecutively")
                             break
                     else:

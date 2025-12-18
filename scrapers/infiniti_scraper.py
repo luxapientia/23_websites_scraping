@@ -244,7 +244,7 @@ class InfinitiScraper(BaseScraper):
                 consecutive_no_new = 0
                 
                 for page_num in range(2, total_pages + 1):
-                    if consecutive_no_new >= 3:
+                    if consecutive_no_new >= 4:
                         self.logger.info(f"Stopping pagination: {consecutive_no_new} consecutive pages with no new products")
                         break
                     

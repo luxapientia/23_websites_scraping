@@ -301,6 +301,7 @@ class MazdaScraper(BaseScraperWithExtension):
                 self.logger.debug(f"Could not determine total pages: {str(e)}, defaulting to 1")
             
             # Extract products from all pages
+            consecutive_zero_count = 0  # Track consecutive pages with zero new products
             for page_num in range(1, total_pages + 1):
                 try:
                     if page_num > 1:
@@ -357,9 +358,16 @@ class MazdaScraper(BaseScraperWithExtension):
                     
                     self.logger.info(f"Category page {page_num}/{total_pages}: Found {len(product_links)} product links, {page_count} new unique URLs (Total: {len(product_urls)})")
                     
-                    if page_count == 0 and page_num > 1:
-                        self.logger.info(f"No new products found on category page {page_num}, stopping pagination")
-                        break
+                    # Check for consecutive zero new products
+                    if page_count == 0:
+                        consecutive_zero_count += 1
+                        self.logger.info(f"No new products found on category page {page_num} (consecutive zero count: {consecutive_zero_count}/4)")
+                        if consecutive_zero_count >= 4:
+                            self.logger.info(f"Stopping pagination: Found zero new products {consecutive_zero_count} times consecutively")
+                            break
+                    else:
+                        # Reset counter if we found new products
+                        consecutive_zero_count = 0
                     
                 except Exception as e:
                     self.logger.error(f"Error processing category page {page_num}: {str(e)}")

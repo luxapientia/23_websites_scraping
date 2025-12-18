@@ -291,7 +291,7 @@ class AudiUSAScraper(BaseScraperWithExtension):
                     
                     if not page_loaded:
                         consecutive_empty += 1
-                        if consecutive_empty >= 3:
+                        if consecutive_empty >= 4:
                             break
                         page_num += 1
                         continue
@@ -321,7 +321,7 @@ class AudiUSAScraper(BaseScraperWithExtension):
                     
                     if new_count == 0:
                         consecutive_empty += 1
-                        if consecutive_empty >= 3:
+                        if consecutive_empty >= 4:
                             break
                     else:
                         consecutive_empty = 0
@@ -332,7 +332,7 @@ class AudiUSAScraper(BaseScraperWithExtension):
                 except Exception as e:
                     self.logger.debug(f"Error on category page {page_num}: {str(e)}")
                     consecutive_empty += 1
-                    if consecutive_empty >= 3:
+                    if consecutive_empty >= 4:
                         break
                     page_num += 1
                     continue
