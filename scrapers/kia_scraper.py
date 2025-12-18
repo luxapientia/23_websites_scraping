@@ -720,18 +720,49 @@ class KiaScraper(BaseScraper):
                     self.driver.get(url)
                     time.sleep(random.uniform(0.5, 1.5))
                     
-                    if self.has_cloudflare_challenge():
-                        cloudflare_bypassed = self.wait_for_cloudflare(timeout=30, target_url=url, max_retries=1)
-                        if not cloudflare_bypassed:
+                    # Verify driver is still connected before checking Cloudflare
+                    try:
+                        if self.driver:
+                            _ = self.driver.current_url  # Test connection
+                    except (ConnectionResetError, OSError, Exception) as conn_error:
+                        self.logger.warning(f"Driver connection lost after page load: {str(conn_error)}")
+                        if retry_count < max_retries:
                             retry_count += 1
-                            if retry_count < max_retries:
-                                time.sleep(random.uniform(10, 15))
-                                continue
-                            else:
-                                return None
+                            time.sleep(random.uniform(5, 10))
+                            continue
+                        else:
+                            return None
+                    
+                    try:
+                        if self.has_cloudflare_challenge():
+                            cloudflare_bypassed = self.wait_for_cloudflare(timeout=30, target_url=url, max_retries=1)
+                            if not cloudflare_bypassed:
+                                retry_count += 1
+                                if retry_count < max_retries:
+                                    time.sleep(random.uniform(10, 15))
+                                    continue
+                                else:
+                                    return None
+                    except (ConnectionResetError, OSError) as conn_error:
+                        self.logger.warning(f"Connection error during Cloudflare check: {str(conn_error)}")
+                        if retry_count < max_retries:
+                            retry_count += 1
+                            time.sleep(random.uniform(5, 10))
+                            continue
+                        else:
+                            return None
                     
                     time.sleep(random.uniform(1.5, 3.0))
-                    html = self.driver.page_source
+                    try:
+                        html = self.driver.page_source
+                    except (ConnectionResetError, OSError) as conn_error:
+                        self.logger.warning(f"Connection lost while getting page source: {str(conn_error)}")
+                        if retry_count < max_retries:
+                            retry_count += 1
+                            time.sleep(random.uniform(5, 10))
+                            continue
+                        else:
+                            return None
                     soup = BeautifulSoup(html, 'lxml')
                     
                     title_text = ''

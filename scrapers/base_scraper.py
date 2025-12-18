@@ -687,6 +687,15 @@ class BaseScraper(ABC):
             if not self.driver:
                 return False
             
+            # Check if driver is still connected/alive
+            try:
+                # Try to access a simple property to verify connection
+                _ = self.driver.current_url
+            except (ConnectionResetError, OSError, Exception) as e:
+                # Driver connection is dead
+                self.logger.debug(f"Driver connection lost in has_cloudflare_challenge: {str(e)}")
+                return False
+            
             try:
                 current_url = self.driver.current_url.lower()
                 
@@ -697,7 +706,12 @@ class BaseScraper(ABC):
                 
                 # SECONDARY CHECK: Only check for challenge if page is SMALL (<5KB)
                 # Challenge pages are typically very small, normal pages are much larger
-                page_source = self.driver.page_source
+                try:
+                    page_source = self.driver.page_source
+                except (ConnectionResetError, OSError, Exception) as e:
+                    # Connection lost while getting page source
+                    self.logger.debug(f"Connection lost while getting page source: {str(e)}")
+                    return False
                 
                 # If page has substantial content (>5KB), it's NOT a challenge page
                 # Even if Cloudflare is mentioned (which is common in CDN links)
@@ -792,12 +806,17 @@ class BaseScraper(ABC):
                 # If we get here, no challenge detected
                 return False
                 
-            except Exception:
+            except (ConnectionResetError, OSError) as e:
+                # Connection error - assume no challenge and let caller handle
+                self.logger.debug(f"Connection error checking Cloudflare challenge: {str(e)}")
+                return False
+            except Exception as e:
                 # If we can't check, assume no challenge to avoid false positives
+                self.logger.debug(f"Error checking Cloudflare challenge: {str(e)}")
                 return False
             
         except Exception as e:
-            self.logger.debug(f"Error checking for Cloudflare: {str(e)}")
+            self.logger.debug(f"Unexpected error in has_cloudflare_challenge: {str(e)}")
             return False
     
     def wait_for_cloudflare(self, timeout=30, target_url=None, max_retries=1):
