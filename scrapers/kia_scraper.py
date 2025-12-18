@@ -64,7 +64,37 @@ class KiaScraper(BaseScraper):
             if not self.driver:
                 self.ensure_driver()
             
-            # All four category URLs to visit one by one
+            # STEP 1: Visit parts-list search product pages first
+            # Start with specific parts-list URLs
+            parts_list_urls = [
+                f"{self.base_url}/parts-list/2009-kia-amanti/chassis/wheel_cap.html",
+                f"{self.base_url}/parts-list/2006-kia-amanti-new_body_style_produced_after_nov_2006/chassis/wheel_cap.html",
+                f"{self.base_url}/parts-list/2006-kia-amanti-new_body_style_produced_before_oct_2006/chassis/wheel_cap.html",
+            ]
+            
+            # Generate additional parts-list URLs dynamically
+            generated_urls = self._generate_parts_list_urls()
+            parts_list_urls.extend(generated_urls)
+            
+            self.logger.info(f"STEP 1: Visiting {len(parts_list_urls)} parts-list search product pages ({len(generated_urls)} generated)...")
+            for idx, parts_list_url in enumerate(parts_list_urls, 1):
+                try:
+                    self.logger.info(f"[{idx}/{len(parts_list_urls)}] Visiting parts-list page: {parts_list_url}")
+                    parts_list_products = self._extract_products_from_parts_list(parts_list_url, product_urls)
+                    self.logger.info(f"[{idx}/{len(parts_list_urls)}] Parts-list page completed: Found {len(parts_list_products)} new products (Total so far: {len(product_urls)})")
+                    
+                    # Delay between pages
+                    if idx < len(parts_list_urls):
+                        time.sleep(random.uniform(1, 2))
+                except Exception as e:
+                    self.logger.error(f"Error processing parts-list page {idx}/{len(parts_list_urls)} ({parts_list_url}): {str(e)}")
+                    import traceback
+                    self.logger.debug(f"Traceback: {traceback.format_exc()}")
+                    continue
+            
+            self.logger.info(f"All {len(parts_list_urls)} parts-list pages processed. Total unique product URLs found: {len(product_urls)}")
+            
+            # STEP 2: All four category URLs to visit one by one
             category_urls = [
                 f"{self.base_url}/oem-kia-wheel_cover.html",
                 f"{self.base_url}/oem-kia-spare_wheel.html",
@@ -72,7 +102,7 @@ class KiaScraper(BaseScraper):
                 f"{self.base_url}/accessories/kia-spare_wheel_kit.html",
             ]
             
-            self.logger.info(f"Starting to visit {len(category_urls)} category pages one by one...")
+            self.logger.info(f"STEP 2: Starting to visit {len(category_urls)} category pages one by one...")
             
             # Visit each category URL one by one and extract products
             for idx, category_url in enumerate(category_urls, 1):
@@ -340,6 +370,188 @@ class KiaScraper(BaseScraper):
             self.logger.debug(f"Traceback: {traceback.format_exc()}")
         
         return new_urls
+    
+    def _extract_products_from_parts_list(self, parts_list_url, existing_urls):
+        """
+        Extract all product URLs from a parts-list page (e.g., /parts-list/2009-kia-amanti/chassis/wheel_cap.html)
+        These pages show individual products with links to /genuine/kia-*~*.html pages
+        """
+        new_urls = []
+        
+        try:
+            if not self.driver:
+                self.ensure_driver()
+            
+            original_timeout = self.page_load_timeout
+            try:
+                self.page_load_timeout = 60
+                self.driver.set_page_load_timeout(60)
+                html = self.get_page(parts_list_url, use_selenium=True, wait_time=3)
+                if not html or len(html) < 5000:
+                    self.logger.warning(f"Parts-list page content too short: {parts_list_url}")
+                    return new_urls
+            except Exception as e:
+                self.logger.warning(f"Error loading parts-list page {parts_list_url}: {str(e)}")
+                return new_urls
+            finally:
+                try:
+                    self.page_load_timeout = original_timeout
+                    self.driver.set_page_load_timeout(original_timeout)
+                except:
+                    pass
+            
+            # Wait for product links to appear
+            try:
+                WebDriverWait(self.driver, 15).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/genuine/kia-']"))
+                )
+            except:
+                self.logger.warning("Product links not found immediately, continuing anyway...")
+            
+            # Scroll to load all content
+            self.logger.info("Scrolling to load all products...")
+            for scroll_round in range(5):
+                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                time.sleep(1.5)
+                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight * 0.7);")
+                time.sleep(0.5)
+                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                time.sleep(1.5)
+            
+            # Final scroll using existing method
+            self._scroll_to_load_content()
+            time.sleep(3)
+            
+            # Get updated HTML after scrolling
+            html = self.driver.page_source
+            soup = BeautifulSoup(html, 'lxml')
+            
+            # Extract product links from parts-list page
+            self.logger.info("Extracting products from parts-list page...")
+            
+            # Strategy 1: Use Selenium to find all links
+            found_urls = set()
+            if self.driver:
+                try:
+                    selenium_links = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='/genuine/kia-']")
+                    for elem in selenium_links:
+                        try:
+                            href = elem.get_attribute('href')
+                            if href and '/genuine/kia-' in href and '~' in href and href.endswith('.html'):
+                                # Normalize URL
+                                if '#' in href:
+                                    href = href.split('#')[0]
+                                if '?' in href:
+                                    href = href.split('?')[0]
+                                href = href.rstrip('/')
+                                
+                                # Filter out category/listing pages
+                                if not any(pattern in href for pattern in ['/accessories/', '/category/', '/oem-kia-', '/parts-list/']):
+                                    found_urls.add(href)
+                        except:
+                            continue
+                    
+                    self.logger.info(f"Found {len(found_urls)} product URLs via Selenium")
+                except Exception as e:
+                    self.logger.debug(f"Selenium link extraction failed: {str(e)}")
+            
+            # Strategy 2: Use BeautifulSoup as fallback
+            if not found_urls:
+                product_links = soup.find_all('a', href=re.compile(r'/genuine/kia-.*~.*\.html'))
+                
+                for link in product_links:
+                    href = link.get('href', '')
+                    if href:
+                        full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                        
+                        # Remove fragment and query params
+                        if '#' in full_url:
+                            full_url = full_url.split('#')[0]
+                        if '?' in full_url:
+                            full_url = full_url.split('?')[0]
+                        
+                        full_url = full_url.rstrip('/')
+                        
+                        # Only collect individual product pages
+                        if '/genuine/kia-' in full_url and '~' in full_url and full_url.endswith('.html'):
+                            # Filter out category/listing pages
+                            if not any(pattern in full_url for pattern in ['/accessories/', '/category/', '/oem-kia-', '/parts-list/']):
+                                found_urls.add(full_url)
+                
+                self.logger.info(f"Found {len(found_urls)} product URLs via BeautifulSoup")
+            
+            # Add found URLs to the collection
+            for full_url in found_urls:
+                if full_url not in existing_urls and full_url not in new_urls:
+                    new_urls.append(full_url)
+                    existing_urls.append(full_url)
+            
+            self.logger.info(f"Parts-list page {parts_list_url}: Found {len(found_urls)} product links, {len(new_urls)} new unique URLs")
+            
+        except Exception as e:
+            self.logger.error(f"Error extracting products from parts-list page {parts_list_url}: {str(e)}")
+            import traceback
+            self.logger.debug(f"Traceback: {traceback.format_exc()}")
+        
+        return new_urls
+    
+    def _generate_parts_list_urls(self):
+        """
+        Generate parts-list URLs for all Kia models with their specific year ranges
+        Pattern: https://www.kiapartsnow.com/parts-list/[year]-kia-[model]/chassis/wheel_cap.html
+        
+        Only generates URLs for years between 2000-2024 (ignores years outside this range)
+        """
+        # Model to year range mapping (start_year, end_year inclusive)
+        model_year_ranges = {
+            'Amanti': (2004, 2009),
+            'Borrego': (2008, 2012),
+            'Cadenza': (2013, 2020),
+            'Carnival': (2022, 2024),
+            'EV6': (2022, 2024),
+            'Forte': (2009, 2023),
+            'Forte Koup': (2009, 2016),
+            'K5': (2021, 2024),
+            'K900': (2015, 2020),
+            'Niro': (2017, 2024),
+            'Niro EV': (2019, 2024),
+            'Optima': (2000, 2020),
+            'Optima Hybrid': (2011, 2020),
+            'Rio': (2000, 2023),
+            'Rondo': (2006, 2011),
+            'Sedona': (2001, 2021),
+            'Seltos': (2021, 2024),
+            'Sephia': (1997, 2001),  # Includes 1997-1999
+            'Sorento': (2003, 2023),
+            'Soul': (2009, 2024),
+            'Soul EV': (2015, 2019),
+            'Spectra': (2000, 2009),
+            'Spectra SX': (2007, 2009),
+            'Spectra5 SX': (2007, 2009),
+            'Sportage': (1997, 2024),  # Includes 1997-1999
+            'Stinger': (2018, 2023),
+            'Telluride': (2020, 2024),
+        }
+        
+        generated_urls = []
+        total_combinations = 0
+        
+        for model, (start_year, end_year) in model_year_ranges.items():
+            # Ensure end_year doesn't exceed 2024
+            end_year = min(2024, end_year)
+            
+            # Convert model name to URL format (lowercase, spaces to underscores)
+            # Examples: "Forte Koup" -> "forte_koup", "Niro EV" -> "niro_ev"
+            model_url = model.lower().replace(' ', '_')
+            
+            # Generate URLs for the year range (inclusive)
+            for year in range(start_year, end_year + 1):
+                url = f"{self.base_url}/parts-list/{year}-kia-{model_url}/chassis/wheel_cap.html"
+                generated_urls.append(url)
+                total_combinations += 1
+        
+        self.logger.info(f"Generated {len(generated_urls)} parts-list URLs from {len(model_year_ranges)} models with specific year ranges")
+        return generated_urls
     
     def _discover_additional_product_urls(self, existing_urls):
         """
