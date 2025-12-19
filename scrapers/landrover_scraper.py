@@ -213,13 +213,11 @@ class LandRoverScraper(BaseScraper):
                     
                     self.logger.info(f"Page {page_num}/{total_pages}: Found {len(product_links)} product links, {page_count} new unique URLs (Total: {len(product_urls)})")
                     
-                    # Check for consecutive zero new products
+                    # Track consecutive zero new products (for logging only - continue visiting all pages)
                     if page_count == 0:
                         consecutive_zero_count += 1
-                        self.logger.info(f"No new products found on page {page_num} (consecutive zero count: {consecutive_zero_count}/4)")
-                        if consecutive_zero_count >= 4:
-                            self.logger.info(f"Stopping pagination: Found zero new products {consecutive_zero_count} times consecutively")
-                            break
+                        self.logger.info(f"No new products found on page {page_num} (consecutive zero count: {consecutive_zero_count})")
+                        # Continue visiting all pages even if we find 0 new products multiple times
                     else:
                         # Reset counter if we found new products
                         consecutive_zero_count = 0

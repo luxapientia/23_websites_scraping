@@ -377,7 +377,7 @@ class FordScraper(BaseScraper):
                     except Exception as e:
                         self.logger.warning(f"Error loading model search page: {str(e)}")
                         continue
-                    
+                
                     # Find and set the results dropdown to 250
                     try:
                         results_select = WebDriverWait(self.driver, 10).until(
@@ -564,11 +564,9 @@ class FordScraper(BaseScraper):
                     if not next_page_clicked:
                         self.logger.info("No next page found, stopping pagination")
                         break
-                        
                 except Exception as e:
                     self.logger.debug(f"Error finding next page: {str(e)}")
                     break
-                
         except Exception as e:
             self.logger.error(f"Error extracting products from search page: {str(e)}")
         
@@ -1246,7 +1244,7 @@ class FordScraper(BaseScraper):
                         
                         # Additional wait to ensure everything is stable
                         time.sleep(1)
-                        
+                            
                         # Step 5: Extract fitment data directly using Selenium (more reliable for dynamic content)
                         # Use Selenium to find elements directly instead of BeautifulSoup
                         try:
