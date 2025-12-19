@@ -1,5 +1,5 @@
 """Scraper for parts.lakelandford.com (Ford parts)"""
-from scrapers.base_scraper_with_extension import BaseScraperWithExtension
+from scrapers.base_scraper import BaseScraper
 from bs4 import BeautifulSoup
 import json
 import re
@@ -8,11 +8,11 @@ import time
 import traceback
 import random
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
-class FordScraper(BaseScraperWithExtension):
+class FordScraper(BaseScraper):
     """Scraper for parts.lakelandford.com"""
     
     def __init__(self):
@@ -38,25 +38,221 @@ class FordScraper(BaseScraperWithExtension):
         return product_urls
     
     def _search_for_wheels(self):
-        """Search for wheels using site search - single page with 250 results, no pagination"""
+        """Search for wheels by visiting model-specific search pages"""
         product_urls = []
         
         try:
             if not self.driver:
                 self.ensure_driver()
             
-            # Search URL with numResults=250 to get all products on one page (no pagination)
-            search_url = f"{self.base_url}/productSearch.aspx?ukey_make=0&modelYear=0&ukey_model=0&ukey_trimLevel=0&ukey_driveline=0&ukey_Category=0&numResults=250&sortOrder=Relevance&ukey_tag=0&isOnSale=0&isAccessory=0&isPerformance=0&showAllModels=1&searchTerm=wheel"
-            self.logger.info(f"Searching: {search_url}")
+            # Step 1: Visit the initial search page to get the model list
+            initial_search_url = f"{self.base_url}/productSearch.aspx?ukey_make=0&modelYear=0&ukey_model=0&ukey_trimLevel=0&ukey_driveline=0&ukey_Category=0&numResults=50&sortOrder=Relevance&ukey_tag=0&isOnSale=0&isAccessory=0&isPerformance=0&showAllModels=1&searchTerm=wheel"
+            self.logger.info(f"Loading initial search page to extract model URLs: {initial_search_url}")
             
             original_timeout = self.page_load_timeout
             try:
-                self.page_load_timeout = 60
-                self.driver.set_page_load_timeout(60)
-                self.driver.get(search_url)
-                time.sleep(3)
+                self.page_load_timeout = 90  # Increased timeout for Cloudflare
+                self.driver.set_page_load_timeout(90)
+                
+                # Load page - undetected_chromedriver will handle Cloudflare automatically
+                self.logger.info("Loading page (undetected_chromedriver will handle Cloudflare automatically)...")
+                self.driver.get(initial_search_url)
+                
+                # Wait for page to start loading (let undetected_chromedriver work)
+                time.sleep(random.uniform(3, 5))
+                
+                # ALWAYS check for Cloudflare challenge - improved detection
+                current_url_check = self.driver.current_url.lower()
+                page_source_check = self.driver.page_source
+                page_preview = page_source_check[:15000].lower() if len(page_source_check) > 15000 else page_source_check.lower()
+                page_size = len(page_source_check)
+                
+                # Enhanced Cloudflare detection (including Turnstile)
+                is_challenge_page = (
+                    'challenges.cloudflare.com' in current_url_check or 
+                    '/cdn-cgi/challenge' in current_url_check or
+                    'just a moment' in page_preview or
+                    'verifying you are human' in page_preview or
+                    'review the security of your connection' in page_preview or
+                    'cf-turnstile-response' in page_preview or
+                    'turnstile' in page_preview or
+                    (page_size < 10000 and self.has_cloudflare_challenge())
+                )
+                
+                # Also check page title
+                try:
+                    page_title = self.driver.title.lower()
+                    if 'just a moment' in page_title:
+                        is_challenge_page = True
+                except:
+                    pass
+                
+                # Debug logging
+                self.logger.info(f"🔍 Debug: URL={current_url_check[:80]}, Page size={page_size}, Title={self.driver.title[:60] if hasattr(self.driver, 'title') else 'N/A'}")
+                
+                if is_challenge_page:
+                    self.logger.info("🛡️ Cloudflare challenge detected - using wait_for_cloudflare method...")
+                    # Use the built-in wait_for_cloudflare method which has robust error handling
+                    cloudflare_bypassed = self.wait_for_cloudflare(timeout=90, target_url=initial_search_url, max_retries=3)
+                    if not cloudflare_bypassed:
+                        self.logger.error("Failed to bypass Cloudflare challenge")
+                        return product_urls
+                    time.sleep(random.uniform(2, 3))
+                else:
+                    # Even if we don't detect challenge, wait a bit and verify we have content
+                    self.logger.info("No Cloudflare challenge detected initially - verifying page loaded...")
+                    time.sleep(random.uniform(2, 3))
+                    
+                    # Verify we actually have content
+                    try:
+                        page_source_verify = self.driver.page_source
+                        page_size_verify = len(page_source_verify)
+                        
+                        if page_size_verify < 10000:
+                            self.logger.warning(f"Page seems small ({page_size_verify} chars) - may still be loading or on challenge, waiting more...")
+                            time.sleep(5)
+                            try:
+                                page_source_verify = self.driver.page_source
+                                page_size_verify = len(page_source_verify)
+                            except Exception as verify_error:
+                                error_str = str(verify_error).lower()
+                                if 'connection' in error_str or 'refused' in error_str:
+                                    self.logger.error("⚠️ Driver connection lost during verification - reinitializing...")
+                                    try:
+                                        self.ensure_driver()
+                                        self.driver.get(initial_search_url)
+                                        time.sleep(random.uniform(3, 5))
+                                        page_source_verify = self.driver.page_source
+                                        page_size_verify = len(page_source_verify)
+                                    except:
+                                        self.logger.error("Failed to recover driver")
+                                        return product_urls
+                            
+                            if page_size_verify < 10000:
+                                # Might be on challenge after all
+                                self.logger.warning("Page still small - checking for Cloudflare...")
+                                if self.has_cloudflare_challenge():
+                                    self.logger.info("🛡️ Cloudflare detected on second check - using wait_for_cloudflare...")
+                                    cloudflare_bypassed = self.wait_for_cloudflare(timeout=90, target_url=initial_search_url, max_retries=3)
+                                    if not cloudflare_bypassed:
+                                        self.logger.error("Failed to bypass Cloudflare challenge")
+                                        return product_urls
+                                    time.sleep(random.uniform(2, 3))
+                    except Exception as verify_error:
+                        error_str = str(verify_error).lower()
+                        if 'connection' in error_str or 'refused' in error_str:
+                            self.logger.error("⚠️ Driver connection lost - reinitializing...")
+                            try:
+                                self.ensure_driver()
+                                self.driver.get(initial_search_url)
+                                time.sleep(random.uniform(3, 5))
+                                # Check for Cloudflare after recovery
+                                if self.has_cloudflare_challenge():
+                                    cloudflare_bypassed = self.wait_for_cloudflare(timeout=90, target_url=initial_search_url, max_retries=3)
+                                    if not cloudflare_bypassed:
+                                        return product_urls
+                            except:
+                                self.logger.error("Failed to recover driver")
+                                return product_urls
+                        else:
+                            self.logger.warning(f"Error during page verification: {str(verify_error)}")
+                
+                # Final verification: must have target elements and substantial content
+                try:
+                    from selenium.webdriver.common.by import By
+                    
+                    # Wait a bit more for page to fully stabilize
+                    time.sleep(random.uniform(2, 3))
+                    
+                    # Check page state with error handling
+                    try:
+                        current_url_final = self.driver.current_url.lower()
+                        page_source_final = self.driver.page_source
+                        page_size_final = len(page_source_final)
+                        page_title_final = self.driver.title.lower() if hasattr(self.driver, 'title') else ''
+                    except Exception as driver_access_error:
+                        error_str = str(driver_access_error).lower()
+                        if 'connection' in error_str or 'refused' in error_str or 'target machine' in error_str:
+                            self.logger.error("⚠️ Driver connection lost during final check - reinitializing...")
+                            try:
+                                self.ensure_driver()
+                                self.driver.get(initial_search_url)
+                                time.sleep(random.uniform(3, 5))
+                                # Check for Cloudflare after recovery
+                                if self.has_cloudflare_challenge():
+                                    cloudflare_bypassed = self.wait_for_cloudflare(timeout=90, target_url=initial_search_url, max_retries=3)
+                                    if not cloudflare_bypassed:
+                                        return product_urls
+                                # Retry getting page info
+                                current_url_final = self.driver.current_url.lower()
+                                page_source_final = self.driver.page_source
+                                page_size_final = len(page_source_final)
+                                page_title_final = self.driver.title.lower() if hasattr(self.driver, 'title') else ''
+                            except Exception as recovery_error:
+                                self.logger.error(f"Failed to recover driver: {str(recovery_error)}")
+                                return product_urls
+                        else:
+                            raise
+                    
+                    self.logger.info(f"🔍 Final check: URL={current_url_final[:80]}, Page size={page_size_final}, Title={page_title_final[:60]}")
+                    
+                    # Check if still on Cloudflare
+                    still_on_cf = (
+                        'challenges.cloudflare.com' in current_url_final or
+                        '/cdn-cgi/challenge' in current_url_final or
+                        'just a moment' in page_title_final or
+                        (page_size_final < 10000 and self.has_cloudflare_challenge())
+                    )
+                    
+                    if still_on_cf:
+                        self.logger.error("Still on Cloudflare challenge page after all attempts")
+                        return product_urls
+                    
+                    # Check for target elements
+                    target_elements = self.driver.find_elements(By.CSS_SELECTOR, "ul.list-unstyled")
+                    visible_targets = [el for el in target_elements if el.is_displayed()]
+                    
+                    if len(visible_targets) == 0:
+                        self.logger.warning("Target elements not found - waiting and retrying...")
+                        time.sleep(5)
+                        
+                        # Retry finding elements
+                        target_elements = self.driver.find_elements(By.CSS_SELECTOR, "ul.list-unstyled")
+                        visible_targets = [el for el in target_elements if el.is_displayed()]
+                        
+                        # Also check page source for the element
+                        if len(visible_targets) == 0:
+                            page_source_check = self.driver.page_source
+                            if 'list-unstyled' not in page_source_check.lower():
+                                self.logger.error("Target elements (ul.list-unstyled) not found in page source - page may not have loaded correctly")
+                                self.logger.debug(f"Page preview (first 500 chars): {page_source_check[:500]}")
+                                return product_urls
+                            else:
+                                self.logger.info("Found 'list-unstyled' in page source but element not visible - may need more time")
+                                time.sleep(3)
+                                target_elements = self.driver.find_elements(By.CSS_SELECTOR, "ul.list-unstyled")
+                                visible_targets = [el for el in target_elements if el.is_displayed()]
+                                if len(visible_targets) == 0:
+                                    self.logger.error("Target elements still not visible after additional wait")
+                                    return product_urls
+                    
+                    self.logger.info(f"✅ Found {len(visible_targets)} visible target element(s) - page loaded successfully")
+                    
+                    # Verify we have substantial content
+                    if page_size_final < 15000:
+                        self.logger.warning(f"Page source still relatively small ({page_size_final} chars) - may still be loading")
+                        time.sleep(3)
+                        page_source_final = self.driver.page_source
+                        if len(page_source_final) < 15000:
+                            self.logger.warning(f"Page source still small after wait ({len(page_source_final)} chars) - but continuing since target elements found")
+                    
+                except Exception as verify_error:
+                    self.logger.error(f"Error in final verification: {str(verify_error)}")
+                    import traceback
+                    self.logger.debug(f"Traceback: {traceback.format_exc()}")
+                    return product_urls
             except Exception as e:
-                self.logger.error(f"Error loading search page: {str(e)}")
+                self.logger.error(f"Error loading initial search page: {str(e)}")
                 return product_urls
             finally:
                 try:
@@ -65,146 +261,316 @@ class FordScraper(BaseScraperWithExtension):
                 except:
                     pass
             
-            # Wait for product links to appear using Selenium
+            # Step 2: Extract all model search URLs from the <ul class="list-unstyled"> tag
+            model_search_urls = []
+            
+            # Final verification that we're past Cloudflare before trying to extract elements
             try:
-                WebDriverWait(self.driver, 20).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/p/']"))
+                current_url = self.driver.current_url.lower()
+                page_source = self.driver.page_source
+                if ('challenges.cloudflare.com' in current_url or 
+                    '/cdn-cgi/challenge' in current_url or
+                    len(page_source) < 10000):
+                    self.logger.error("Still on Cloudflare challenge page - cannot extract elements")
+                    return product_urls
+            except:
+                pass
+            
+            try:
+                # Wait for the model list to appear - with longer timeout
+                self.logger.info("Waiting for model list to appear...")
+                WebDriverWait(self.driver, 30).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "ul.list-unstyled"))
                 )
-                self.logger.info("Product links detected on page")
-            except TimeoutException:
-                self.logger.warning("Product links not found immediately, continuing anyway...")
-            
-            # Scroll to load all products (lazy loading)
-            self._scroll_to_load_content()
-            
-            # Wait a bit more for any dynamic content
-            time.sleep(3)
-            
-            # Try to find product links using Selenium first (more reliable for dynamic content)
-            try:
-                # Try multiple patterns for Ford product URLs
-                selenium_selectors = [
-                    "a[href*='/p/Ford__/']",
-                    "a[href*='/p/Ford/']",
-                    "a[href*='/p/']",
-                ]
                 
-                selenium_links = []
-                for selector in selenium_selectors:
-                    try:
-                        links = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                        if links:
-                            selenium_links = links
-                            self.logger.info(f"Found {len(selenium_links)} product links via Selenium using selector: {selector}")
-                            break
-                    except:
-                        continue
+                # Additional wait to ensure content is fully loaded
+                time.sleep(random.uniform(1, 2))
                 
-                for link_elem in selenium_links:
+                # Find the ul.list-unstyled element
+                model_list_ul = self.driver.find_element(By.CSS_SELECTOR, "ul.list-unstyled")
+                model_links = model_list_ul.find_elements(By.TAG_NAME, "a")
+                
+                for link in model_links:
                     try:
-                        href = link_elem.get_attribute('href')
-                        if href:
+                        href = link.get_attribute('href')
+                        if href and 'productSearch.aspx' in href and 'searchTerm=wheel' in href:
                             # Normalize URL
                             full_url = href if href.startswith('http') else f"{self.base_url}{href}"
-                            
-                            # Remove query parameters and fragments
-                            if '?' in full_url:
-                                full_url = full_url.split('?')[0]
-                            if '#' in full_url:
-                                full_url = full_url.split('#')[0]
-                            full_url = full_url.rstrip('/')
-                            
-                            # Only collect individual product pages (SimplePart pattern: /p/Ford__/Product-Name/ID/PartNumber.html)
-                            if '/p/' in full_url and full_url.endswith('.html'):
-                                if full_url not in product_urls:
-                                    product_urls.append(full_url)
+                            # Clean up URL (remove &amp; and normalize)
+                            full_url = full_url.replace('&amp;', '&')
+                            if full_url not in model_search_urls:
+                                model_search_urls.append(full_url)
                     except Exception as e:
-                        self.logger.debug(f"Error extracting link from Selenium element: {str(e)}")
+                        self.logger.debug(f"Error extracting model link: {str(e)}")
                         continue
+                
+                self.logger.info(f"Found {len(model_search_urls)} model search URLs")
             except Exception as e:
-                self.logger.debug(f"Error finding links via Selenium: {str(e)}")
-            
-            # Also try BeautifulSoup parsing as fallback
-            html = self.driver.page_source
-            soup = BeautifulSoup(html, 'lxml')
-            
-            # Try multiple patterns to find product links (SimplePart platform)
-            # Pattern 1: /p/Ford__/Product-Name/ID/PartNumber.html
-            product_links = soup.find_all('a', href=re.compile(r'/p/Ford__/', re.I))
-            
-            # Pattern 2: /p/Ford/Product-Name/ID/PartNumber.html (alternative)
-            if not product_links:
-                product_links = soup.find_all('a', href=re.compile(r'/p/Ford/', re.I))
-            
-            # Pattern 3: Try looking in product containers/rows
-            if not product_links:
-                product_containers = soup.find_all(['div', 'li', 'tr'], class_=re.compile(r'product|item|part|row', re.I))
-                for container in product_containers:
-                    container_links = container.find_all('a', href=re.compile(r'/p/', re.I))
-                    product_links.extend(container_links)
-            
-            # Pattern 4: Look for any link with /p/ pattern ending in .html
-            if not product_links:
-                all_links = soup.find_all('a', href=True)
-                for link in all_links:
-                    href = link.get('href', '')
-                    if href and '/p/' in href.lower() and href.lower().endswith('.html'):
-                        product_links.append(link)
-            
-            # Extract URLs from BeautifulSoup links
-            for link in product_links:
-                href = link.get('href', '')
-                if href:
-                    full_url = href if href.startswith('http') else f"{self.base_url}{href}"
-                    # Remove query params and fragments
-                    if '?' in full_url:
-                        full_url = full_url.split('?')[0]
-                    if '#' in full_url:
-                        full_url = full_url.split('#')[0]
-                    full_url = full_url.rstrip('/')
-                    
-                    # Only collect individual product pages
-                    if '/p/' in full_url and full_url.endswith('.html'):
-                        if full_url not in product_urls:
-                            product_urls.append(full_url)
-            
-            # Pattern 5: Use JavaScript to find all links (most comprehensive fallback)
-            if not product_urls:
+                self.logger.error(f"Error extracting model URLs: {str(e)}")
+                # Fallback: try BeautifulSoup
                 try:
-                    js_links = self.driver.execute_script("""
-                        var links = [];
-                        var allLinks = document.querySelectorAll('a[href]');
-                        for (var i = 0; i < allLinks.length; i++) {
-                            var href = allLinks[i].href || allLinks[i].getAttribute('href');
-                            if (href && href.toLowerCase().indexOf('/p/') !== -1 && href.toLowerCase().endsWith('.html')) {
-                                links.push(href);
-                            }
-                        }
-                        return links;
-                    """)
-                    self.logger.info(f"Found {len(js_links)} product links via JavaScript")
-                    for js_link in js_links:
-                        if js_link and js_link not in product_urls:
-                            # Normalize URL
-                            full_url = js_link if js_link.startswith('http') else f"{self.base_url}{js_link}"
-                            if '?' in full_url:
-                                full_url = full_url.split('?')[0]
-                            if '#' in full_url:
-                                full_url = full_url.split('#')[0]
-                            full_url = full_url.rstrip('/')
-                            if '/p/' in full_url and full_url.endswith('.html'):
-                                product_urls.append(full_url)
-                except Exception as js_error:
-                    self.logger.debug(f"Error finding links via JavaScript: {str(js_error)}")
+                    html = self.driver.page_source
+                    soup = BeautifulSoup(html, 'lxml')
+                    model_list_ul = soup.find('ul', class_='list-unstyled')
+                    if model_list_ul:
+                        model_links = model_list_ul.find_all('a', href=True)
+                        for link in model_links:
+                            href = link.get('href', '')
+                            if href and 'productSearch.aspx' in href and 'searchTerm=wheel' in href:
+                                full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                                full_url = full_url.replace('&amp;', '&')
+                                if full_url not in model_search_urls:
+                                    model_search_urls.append(full_url)
+                        self.logger.info(f"Found {len(model_search_urls)} model search URLs via BeautifulSoup")
+                except Exception as bs_error:
+                    self.logger.error(f"Error extracting model URLs via BeautifulSoup: {str(bs_error)}")
             
-            self.logger.info(f"Found {len(product_urls)} unique product URLs on search page")
+            # Step 3: Visit each model search URL, set results to 250, click Refine, and collect products
+            for idx, model_url in enumerate(model_search_urls, 1):
+                try:
+                    self.logger.info(f"Processing model {idx}/{len(model_search_urls)}: {model_url}")
+                    
+                    # Visit the model search page - undetected_chromedriver will handle Cloudflare automatically
+                    try:
+                        self.page_load_timeout = 60
+                        self.driver.set_page_load_timeout(60)
+                        self.driver.get(model_url)
+                        
+                        # Wait for page to start loading (let undetected_chromedriver work)
+                        time.sleep(random.uniform(2, 4))
+                        
+                        # Quick check if we're on Cloudflare challenge
+                        current_url_check = self.driver.current_url.lower()
+                        page_preview = self.driver.page_source[:10000] if len(self.driver.page_source) > 10000 else self.driver.page_source
+                        
+                        is_challenge_page = (
+                            'challenges.cloudflare.com' in current_url_check or 
+                            '/cdn-cgi/challenge' in current_url_check or
+                            (len(page_preview) < 5000 and self.has_cloudflare_challenge())
+                        )
+                        
+                        if is_challenge_page:
+                            self.logger.info("🛡️ Cloudflare on model page - waiting for undetected_chromedriver...")
+                            # Wait up to 45 seconds for undetected_chromedriver to handle it
+                            max_wait = 45
+                            waited = 0
+                            while waited < max_wait:
+                                time.sleep(3)
+                                waited += 3
+                                current_url_check = self.driver.current_url.lower()
+                                page_source_check = self.driver.page_source
+                                if ('challenges.cloudflare.com' not in current_url_check and 
+                                    '/cdn-cgi/challenge' not in current_url_check and
+                                    len(page_source_check) > 8000):
+                                    self.logger.info(f"✅ Cloudflare bypassed on model page! (waited {waited}s)")
+                                    break
+                                if waited % 10 == 0:
+                                    self.logger.info(f"⏳ Waiting for Cloudflare bypass... ({waited}s/{max_wait}s)")
+                            
+                            # If still on challenge after wait, try manual bypass
+                            final_url = self.driver.current_url.lower()
+                            if 'challenges.cloudflare.com' in final_url or '/cdn-cgi/challenge' in final_url:
+                                self.logger.warning("⚠️ Using manual bypass for model page...")
+                                self.wait_for_cloudflare(timeout=60, target_url=model_url, max_retries=2)
+                        
+                        time.sleep(random.uniform(1, 2))
+                    except Exception as e:
+                        self.logger.warning(f"Error loading model search page: {str(e)}")
+                        continue
+                    
+                    # Find and set the results dropdown to 250
+                    try:
+                        results_select = WebDriverWait(self.driver, 10).until(
+                            EC.presence_of_element_located((By.ID, "ctl00_Content_PageBody_NumResults"))
+                        )
+                        select = Select(results_select)
+                        select.select_by_value("250")
+                        self.logger.info("Set results dropdown to 250")
+                        time.sleep(1)
+                    except Exception as e:
+                        self.logger.warning(f"Error setting results dropdown: {str(e)}")
+                        continue
+                    
+                    # Click the Refine button
+                    try:
+                        refine_button = WebDriverWait(self.driver, 10).until(
+                            EC.element_to_be_clickable((By.ID, "ctl00_Content_PageBody_RefineSearchNumAndSortButton"))
+                        )
+                        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", refine_button)
+                        time.sleep(0.5)
+                        refine_button.click()
+                        self.logger.info("Clicked Refine button")
+                        time.sleep(3)  # Wait for page to reload
+                    except Exception as e:
+                        self.logger.warning(f"Error clicking Refine button: {str(e)}")
+                        continue
+                    
+                    # Extract product URLs from this model's search results (with pagination)
+                    model_product_urls = self._extract_products_from_search_page()
+                    product_urls.extend(model_product_urls)
+                    self.logger.info(f"Found {len(model_product_urls)} products for this model (Total so far: {len(product_urls)})")
+                    
+                except Exception as e:
+                    self.logger.error(f"Error processing model URL {model_url}: {str(e)}")
+                    continue
             
-            # No pagination - all results are on a single page
+            self.logger.info(f"Found {len(product_urls)} total unique product URLs across all models")
             
         except Exception as e:
             self.logger.error(f"Error searching for wheels: {str(e)}")
             import traceback
             self.logger.debug(f"Traceback: {traceback.format_exc()}")
+        
+        return product_urls
+    
+    def _extract_products_from_search_page(self):
+        """Extract product URLs from current search results page, handling pagination"""
+        product_urls = []
+        max_consecutive_empty = 4
+        consecutive_empty = 0
+        page_num = 1
+        
+        try:
+            while True:
+                self.logger.info(f"Extracting products from page {page_num}...")
+                
+                # Wait for product links to appear
+                try:
+                    WebDriverWait(self.driver, 20).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/p/']"))
+                    )
+                except TimeoutException:
+                    self.logger.warning("Product links not found, may be empty page")
+                
+                # Scroll to load all products (lazy loading)
+                self._scroll_to_load_content()
+                time.sleep(2)
+                
+                # Extract product URLs from current page
+                page_count = 0
+                
+                # Try Selenium first
+                try:
+                    selenium_links = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='/p/']")
+                    for link_elem in selenium_links:
+                        try:
+                            href = link_elem.get_attribute('href')
+                            if href:
+                                # Normalize URL
+                                full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                                # Remove query parameters and fragments
+                                if '?' in full_url:
+                                    full_url = full_url.split('?')[0]
+                                if '#' in full_url:
+                                    full_url = full_url.split('#')[0]
+                                full_url = full_url.rstrip('/')
+                                
+                                # Only collect individual product pages
+                                if '/p/' in full_url and full_url.endswith('.html'):
+                                    if full_url not in product_urls:
+                                        product_urls.append(full_url)
+                                        page_count += 1
+                        except Exception as e:
+                            self.logger.debug(f"Error extracting link: {str(e)}")
+                            continue
+                except Exception as e:
+                    self.logger.debug(f"Error finding links via Selenium: {str(e)}")
+                
+                # Fallback to BeautifulSoup
+                if page_count == 0:
+                    try:
+                        html = self.driver.page_source
+                        soup = BeautifulSoup(html, 'lxml')
+                        product_links = soup.find_all('a', href=re.compile(r'/p/.*\.html', re.I))
+                        for link in product_links:
+                            href = link.get('href', '')
+                            if href:
+                                full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                                if '?' in full_url:
+                                    full_url = full_url.split('?')[0]
+                                if '#' in full_url:
+                                    full_url = full_url.split('#')[0]
+                                full_url = full_url.rstrip('/')
+                                if '/p/' in full_url and full_url.endswith('.html'):
+                                    if full_url not in product_urls:
+                                        product_urls.append(full_url)
+                                        page_count += 1
+                    except Exception as e:
+                        self.logger.debug(f"Error finding links via BeautifulSoup: {str(e)}")
+                
+                self.logger.info(f"Page {page_num}: Found {page_count} new product URLs (Total: {len(product_urls)})")
+                
+                # Check for consecutive empty pages
+                if page_count == 0:
+                    consecutive_empty += 1
+                    if consecutive_empty >= max_consecutive_empty:
+                        self.logger.info(f"Stopping pagination: {consecutive_empty} consecutive pages with zero new products")
+                        break
+                else:
+                    consecutive_empty = 0
+                
+                # Try to find and click next page button
+                next_page_clicked = False
+                try:
+                    # Look for pagination links/buttons
+                    next_selectors = [
+                        (By.CSS_SELECTOR, "a[href*='page=']"),
+                        (By.XPATH, "//a[contains(text(), 'Next')]"),
+                        (By.XPATH, "//a[contains(text(), '>')]"),
+                        (By.CSS_SELECTOR, ".pagination a:last-child"),
+                    ]
+                    
+                    for selector_type, selector_value in next_selectors:
+                        try:
+                            next_links = self.driver.find_elements(selector_type, selector_value)
+                            for link in next_links:
+                                try:
+                                    link_text = link.text.strip().lower()
+                                    href = link.get_attribute('href') or ''
+                                    # Check if this is a next page link
+                                    if ('next' in link_text or '>' in link_text or 
+                                        (href and 'page=' in href and str(page_num + 1) in href)):
+                                        if link.is_displayed() and link.is_enabled():
+                                            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", link)
+                                            time.sleep(0.5)
+                                            link.click()
+                                            next_page_clicked = True
+                                            page_num += 1
+                                            time.sleep(3)
+                                            break
+                                except:
+                                    continue
+                            if next_page_clicked:
+                                break
+                        except:
+                            continue
+                    
+                    if not next_page_clicked:
+                        # Check if we can construct next page URL
+                        current_url = self.driver.current_url
+                        if 'page=' in current_url:
+                            # Try to increment page number in URL
+                            import re
+                            next_url = re.sub(r'page=(\d+)', lambda m: f'page={int(m.group(1)) + 1}', current_url)
+                            if next_url != current_url:
+                                try:
+                                    self.driver.get(next_url)
+                                    page_num += 1
+                                    time.sleep(3)
+                                    next_page_clicked = True
+                                except:
+                                    pass
+                    
+                    if not next_page_clicked:
+                        self.logger.info("No next page found, stopping pagination")
+                        break
+                        
+                except Exception as e:
+                    self.logger.debug(f"Error finding next page: {str(e)}")
+                    break
+                
+        except Exception as e:
+            self.logger.error(f"Error extracting products from search page: {str(e)}")
         
         return product_urls
     

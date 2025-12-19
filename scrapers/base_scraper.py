@@ -707,7 +707,7 @@ class BaseScraper(ABC):
                 # SECONDARY CHECK: Only check for challenge if page is SMALL (<5KB)
                 # Challenge pages are typically very small, normal pages are much larger
                 try:
-                    page_source = self.driver.page_source
+                page_source = self.driver.page_source
                 except (ConnectionResetError, OSError, Exception) as e:
                     # Connection lost while getting page source
                     self.logger.debug(f"Connection lost while getting page source: {str(e)}")
@@ -842,9 +842,406 @@ class BaseScraper(ABC):
         retry_count = 0
         import random
         
-        # Initial wait for Cloudflare to start processing (increased for better success)
-        # For "Verifying you are human" challenges, they can take longer
-        initial_wait = random.uniform(5, 8)  # Increased from 3-5s to 5-8s
+        # Try to find and click Cloudflare checkbox if present
+        checkbox_clicked = False
+        try:
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.support.ui import WebDriverWait
+            from selenium.webdriver.support import expected_conditions as EC
+            from selenium.webdriver.common.action_chains import ActionChains
+            
+            # Strategy 0: Check for Turnstile challenge first (new Cloudflare system)
+            try:
+                page_source_check = self.driver.page_source.lower()
+                is_turnstile = (
+                    'cf-turnstile-response' in page_source_check or
+                    'turnstile' in page_source_check or
+                    'challenges.cloudflare.com/turnstile' in page_source_check or
+                    'turnstile/v0' in page_source_check
+                )
+                
+                if is_turnstile:
+                    self.logger.info("🔐 Detected Cloudflare Turnstile challenge - looking for checkbox widget...")
+                    
+                    # Wait for Turnstile script to load and render widget (can take a few seconds)
+                    max_wait_for_widget = 10
+                    widget_waited = 0
+                    while widget_waited < max_wait_for_widget:
+                        time.sleep(1)
+                        widget_waited += 1
+                        
+                        try:
+                            # Check if Turnstile widget has rendered by looking for the widget container
+                            widget_containers = self.driver.find_elements(By.CSS_SELECTOR,
+                                "div[id*='cf-chl-widget'], div[id*='SoGDz'], div[style*='display: grid'], iframe[src*='turnstile']")
+                            if widget_containers:
+                                self.logger.info(f"Turnstile widget found after {widget_waited}s")
+                                break
+                        except:
+                            pass
+                    
+                    # Look for checkbox - Turnstile can render it in various ways
+                    # Strategy 1: Wait for Turnstile iframes to load dynamically (they load after script execution)
+                    try:
+                        # Wait up to 15 seconds for Turnstile iframes to appear
+                        max_iframe_wait = 15
+                        iframe_wait_count = 0
+                        while iframe_wait_count < max_iframe_wait:
+                            all_iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
+                            turnstile_iframes = [iframe for iframe in all_iframes 
+                                                if 'turnstile' in iframe.get_attribute('src') or 
+                                                   'challenges.cloudflare.com' in (iframe.get_attribute('src') or '')]
+                            
+                            if turnstile_iframes:
+                                self.logger.info(f"Found {len(turnstile_iframes)} Turnstile iframe(s) after {iframe_wait_count}s")
+                                break
+                            
+                            time.sleep(1)
+                            iframe_wait_count += 1
+                        
+                        # Check all iframes (including dynamically loaded ones)
+                        all_iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
+                        self.logger.info(f"Checking {len(all_iframes)} iframe(s) for Turnstile checkbox...")
+                        
+                        for iframe_idx, iframe in enumerate(all_iframes):
+                            try:
+                                iframe_src = iframe.get_attribute('src') or ''
+                                self.logger.debug(f"Checking iframe {iframe_idx + 1}: {iframe_src[:100] if iframe_src else 'no src'}")
+                                
+                                self.driver.switch_to.frame(iframe)
+                                time.sleep(0.5)
+                                
+                                # Look for checkbox in iframe - try multiple selectors
+                                checkbox_selectors = [
+                                    "input[type='checkbox']",
+                                    "input[type='checkbox']:not([hidden])",
+                                    ".cb-wrapper input",
+                                    "label input[type='checkbox']",
+                                    "[role='checkbox']",
+                                    "span[class*='checkbox']",
+                                ]
+                                
+                                for selector in checkbox_selectors:
+                                    try:
+                                        checkboxes = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                                        for checkbox in checkboxes:
+                                            try:
+                                                if checkbox.is_displayed() and checkbox.is_enabled():
+                                                    wait = WebDriverWait(self.driver, 5)
+                                                    checkbox = wait.until(EC.element_to_be_clickable(checkbox))
+                                                    
+                                                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", checkbox)
+                                                    time.sleep(random.uniform(0.5, 1.0))
+                                                    
+                                                    self.driver.execute_script("arguments[0].click();", checkbox)
+                                                    checkbox_clicked = True
+                                                    self.logger.info(f"✓ Clicked Turnstile checkbox in iframe {iframe_idx + 1} (selector: {selector})")
+                                                    time.sleep(random.uniform(1, 2))
+                                                    break
+                                            except:
+                                                continue
+                                        if checkbox_clicked:
+                                            break
+                                    except:
+                                        continue
+                                
+                                self.driver.switch_to.default_content()
+                                if checkbox_clicked:
+                                    break
+                            except Exception as iframe_error:
+                                try:
+                                    self.driver.switch_to.default_content()
+                                except:
+                                    pass
+                                self.logger.debug(f"Error checking iframe {iframe_idx + 1}: {str(iframe_error)}")
+                                continue
+                    except Exception as iframe_check_error:
+                        self.logger.debug(f"Error checking Turnstile iframes: {str(iframe_check_error)}")
+                    
+                    # Strategy 2: Look for checkbox in main page (Turnstile widget container)
+                    if not checkbox_clicked:
+                        try:
+                            # Wait a bit more for checkbox to render
+                            time.sleep(2)
+                            
+                            # Find Turnstile widget containers
+                            turnstile_containers = self.driver.find_elements(By.CSS_SELECTOR,
+                                "div[id*='cf-chl-widget'], div[id*='SoGDz'], div[style*='display: grid']")
+                            
+                            self.logger.info(f"Found {len(turnstile_containers)} Turnstile widget container(s)")
+                            
+                            for container in turnstile_containers:
+                                try:
+                                    # Look for checkbox inside container - try multiple selectors
+                                    checkbox_selectors = [
+                                        "input[type='checkbox']",
+                                        "input[type='checkbox']:not([hidden])",
+                                        ".cb-wrapper input",
+                                        "label input[type='checkbox']",
+                                        "[role='checkbox']",
+                                    ]
+                                    
+                                    for selector in checkbox_selectors:
+                                        checkboxes = container.find_elements(By.CSS_SELECTOR, selector)
+                                        
+                                        # Also check nearby elements (siblings, parent)
+                                        if not checkboxes:
+                                            try:
+                                                parent = container.find_element(By.XPATH, "./..")
+                                                checkboxes = parent.find_elements(By.CSS_SELECTOR, selector)
+                                            except:
+                                                pass
+                                        
+                                        for checkbox in checkboxes:
+                                            try:
+                                                if checkbox.is_displayed() and checkbox.is_enabled():
+                                                    wait = WebDriverWait(self.driver, 10)
+                                                    checkbox = wait.until(EC.element_to_be_clickable(checkbox))
+                                                    
+                                                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", checkbox)
+                                                    time.sleep(random.uniform(0.5, 1.0))
+                                                    
+                                                    # Try multiple click methods
+                                                    try:
+                                                        self.driver.execute_script("arguments[0].click();", checkbox)
+                                                        checkbox_clicked = True
+                                                        self.logger.info(f"✓ Clicked Turnstile checkbox in container (selector: {selector})")
+                                                        time.sleep(random.uniform(1, 2))
+                                                        break
+                                                    except:
+                                                        try:
+                                                            actions = ActionChains(self.driver)
+                                                            actions.move_to_element(checkbox).pause(random.uniform(0.2, 0.5)).click().perform()
+                                                            checkbox_clicked = True
+                                                            self.logger.info(f"✓ Clicked Turnstile checkbox (ActionChains, selector: {selector})")
+                                                            time.sleep(random.uniform(1, 2))
+                                                            break
+                                                        except:
+                                                            checkbox.click()
+                                                            checkbox_clicked = True
+                                                            self.logger.info(f"✓ Clicked Turnstile checkbox (direct, selector: {selector})")
+                                                            time.sleep(random.uniform(1, 2))
+                                                            break
+                                            except:
+                                                continue
+                                        
+                                        if checkbox_clicked:
+                                            break
+                                    
+                                    if checkbox_clicked:
+                                        break
+                                except:
+                                    continue
+                            
+                            # Last resort: Check entire page for any visible checkbox
+                            if not checkbox_clicked:
+                                try:
+                                    all_checkboxes = self.driver.find_elements(By.CSS_SELECTOR, "input[type='checkbox']:not([hidden])")
+                                    self.logger.info(f"Checking {len(all_checkboxes)} checkbox(es) on entire page...")
+                                    for checkbox in all_checkboxes:
+                                        try:
+                                            if checkbox.is_displayed() and checkbox.is_enabled():
+                                                wait = WebDriverWait(self.driver, 5)
+                                                checkbox = wait.until(EC.element_to_be_clickable(checkbox))
+                                                
+                                                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", checkbox)
+                                                time.sleep(random.uniform(0.5, 1.0))
+                                                
+                                                self.driver.execute_script("arguments[0].click();", checkbox)
+                                                checkbox_clicked = True
+                                                self.logger.info("✓ Clicked checkbox found on page")
+                                                time.sleep(random.uniform(1, 2))
+                                                break
+                                        except:
+                                            continue
+                                except:
+                                    pass
+                        except Exception as turnstile_error:
+                            self.logger.debug(f"Error finding Turnstile checkbox: {str(turnstile_error)}")
+                    
+                    if not checkbox_clicked:
+                        self.logger.info("⚠️ Turnstile checkbox not found - Turnstile may complete automatically or checkbox is in shadow DOM")
+            except Exception as turnstile_error:
+                self.logger.debug(f"Error checking for Turnstile: {str(turnstile_error)}")
+            
+            # Strategy 1: Check for iframes first (Cloudflare often uses iframes for old challenges)
+            if not checkbox_clicked:
+                try:
+                    iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
+                    self.logger.info(f"Found {len(iframes)} iframe(s) - checking for Cloudflare challenge inside...")
+                    
+                    for iframe_idx, iframe in enumerate(iframes):
+                        try:
+                            self.driver.switch_to.frame(iframe)
+                            self.logger.info(f"Switched to iframe {iframe_idx + 1}")
+                            time.sleep(0.5)
+                            
+                            checkbox_selectors = [
+                                "input[type='checkbox']",
+                                "input.cb",
+                                ".cb-wrapper input",
+                                "label input[type='checkbox']",
+                                "#challenge-form input[type='checkbox']",
+                            ]
+                            
+                            for selector in checkbox_selectors:
+                                try:
+                                    checkboxes = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                                    for checkbox in checkboxes:
+                                        try:
+                                            wait = WebDriverWait(self.driver, 5)
+                                            checkbox = wait.until(EC.element_to_be_clickable(checkbox))
+                                            
+                                            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", checkbox)
+                                            time.sleep(random.uniform(0.5, 1.0))
+                                            
+                                            try:
+                                                self.driver.execute_script("arguments[0].click();", checkbox)
+                                                checkbox_clicked = True
+                                                self.logger.info(f"✓ Clicked Cloudflare checkbox in iframe {iframe_idx + 1} (JavaScript)")
+                                                time.sleep(random.uniform(1, 2))
+                                                break
+                                            except:
+                                                try:
+                                                    actions = ActionChains(self.driver)
+                                                    actions.move_to_element(checkbox).pause(random.uniform(0.2, 0.5)).click().perform()
+                                                    checkbox_clicked = True
+                                                    self.logger.info(f"✓ Clicked Cloudflare checkbox in iframe {iframe_idx + 1} (ActionChains)")
+                                                    time.sleep(random.uniform(1, 2))
+                                                    break
+                                                except:
+                                                    checkbox.click()
+                                                    checkbox_clicked = True
+                                                    self.logger.info(f"✓ Clicked Cloudflare checkbox in iframe {iframe_idx + 1} (direct)")
+                                                    time.sleep(random.uniform(1, 2))
+                                                    break
+                                        except:
+                                            continue
+                                    if checkbox_clicked:
+                                        break
+                                except:
+                                    continue
+                            
+                            self.driver.switch_to.default_content()
+                            if checkbox_clicked:
+                                break
+                        except Exception as iframe_error:
+                            try:
+                                self.driver.switch_to.default_content()
+                            except:
+                                pass
+                            self.logger.debug(f"Error checking iframe {iframe_idx + 1}: {str(iframe_error)}")
+                            continue
+                except Exception as iframe_check_error:
+                    self.logger.debug(f"Error checking iframes: {str(iframe_check_error)}")
+            
+            # Strategy 2: Check main page if checkbox not found in iframes
+            if not checkbox_clicked:
+                self.logger.info("Checking main page for Cloudflare checkbox...")
+                checkbox_selectors = [
+                    "input[type='checkbox']",
+                    "input.cb",
+                    ".cb-wrapper input",
+                    "label input[type='checkbox']",
+                    "label[for*='challenge'] input",
+                    "#challenge-form input[type='checkbox']",
+                    "form input[type='checkbox']",
+                ]
+                
+                for selector in checkbox_selectors:
+                    try:
+                        wait = WebDriverWait(self.driver, 5)
+                        try:
+                            checkboxes = wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, selector)))
+                        except:
+                            checkboxes = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                        
+                        for checkbox in checkboxes:
+                            try:
+                                if checkbox.is_displayed() and checkbox.is_enabled():
+                                    wait = WebDriverWait(self.driver, 5)
+                                    checkbox = wait.until(EC.element_to_be_clickable(checkbox))
+                                    
+                                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", checkbox)
+                                    time.sleep(random.uniform(0.5, 1.0))
+                                    
+                                    try:
+                                        self.driver.execute_script("arguments[0].click();", checkbox)
+                                        checkbox_clicked = True
+                                        self.logger.info("✓ Clicked Cloudflare checkbox (JavaScript)")
+                                        time.sleep(random.uniform(1, 2))
+                                        break
+                                    except:
+                                        try:
+                                            actions = ActionChains(self.driver)
+                                            actions.move_to_element(checkbox).pause(random.uniform(0.2, 0.5)).click().perform()
+                                            checkbox_clicked = True
+                                            self.logger.info("✓ Clicked Cloudflare checkbox (ActionChains)")
+                                            time.sleep(random.uniform(1, 2))
+                                            break
+                                        except:
+                                            checkbox.click()
+                                            checkbox_clicked = True
+                                            self.logger.info("✓ Clicked Cloudflare checkbox (direct)")
+                                            time.sleep(random.uniform(1, 2))
+                                            break
+                            except:
+                                continue
+                        if checkbox_clicked:
+                            break
+                    except:
+                        continue
+                
+                # Strategy 3: Try clicking by label text if checkbox not found
+                if not checkbox_clicked:
+                    try:
+                        labels = self.driver.find_elements(By.XPATH, "//label[contains(text(), 'Verify') or contains(text(), 'verify') or contains(text(), 'human')]")
+                        for label in labels:
+                            try:
+                                if label.is_displayed():
+                                    wait = WebDriverWait(self.driver, 5)
+                                    label = wait.until(EC.element_to_be_clickable(label))
+                                    
+                                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", label)
+                                    time.sleep(random.uniform(0.5, 1.0))
+                                    
+                                    try:
+                                        self.driver.execute_script("arguments[0].click();", label)
+                                        checkbox_clicked = True
+                                        self.logger.info("✓ Clicked Cloudflare checkbox via label (JavaScript)")
+                                        time.sleep(random.uniform(1, 2))
+                                        break
+                                    except:
+                                        label.click()
+                                        checkbox_clicked = True
+                                        self.logger.info("✓ Clicked Cloudflare checkbox via label")
+                                        time.sleep(random.uniform(1, 2))
+                                        break
+                            except:
+                                continue
+                    except:
+                        pass
+            
+            if not checkbox_clicked:
+                self.logger.info("⚠️ Could not find Cloudflare checkbox - will wait for automatic verification")
+            else:
+                # Verify checkbox was actually clicked
+                try:
+                    time.sleep(1)
+                    checked_boxes = self.driver.find_elements(By.CSS_SELECTOR, "input[type='checkbox']:checked")
+                    if checked_boxes:
+                        self.logger.info("✓ Verified: Cloudflare checkbox is checked")
+                except:
+                    pass
+        except Exception as checkbox_error:
+            self.logger.debug(f"Error trying to click Cloudflare checkbox: {str(checkbox_error)}")
+        
+        # Initial wait for Cloudflare to start processing
+        if checkbox_clicked:
+            initial_wait = random.uniform(8, 12)  # Longer wait after clicking checkbox
+            self.logger.info(f"⏳ Initial wait after checkbox click: {initial_wait:.1f}s for Cloudflare verification...")
+        else:
+            initial_wait = random.uniform(5, 8)
         self.logger.info(f"⏳ Initial wait: {initial_wait:.1f}s for Cloudflare to start...")
         time.sleep(initial_wait)
         
@@ -895,6 +1292,32 @@ class BaseScraper(ABC):
                     page_source = self.driver.page_source
                     current_url = self.driver.current_url.lower()
                     
+                    # Check for Turnstile completion first (if it was a Turnstile challenge)
+                    try:
+                        from selenium.webdriver.common.by import By
+                        turnstile_response = self.driver.find_elements(By.CSS_SELECTOR,
+                            "input[name='cf-turnstile-response']")
+                        for response_input in turnstile_response:
+                            try:
+                                value = response_input.get_attribute('value') or ''
+                                # If Turnstile response token is filled (long token), challenge might be complete
+                                if value and len(value) > 50:  # Turnstile tokens are long
+                                    # Check if we're past the challenge URL
+                                    if ('challenges.cloudflare.com' not in current_url and 
+                                        '/cdn-cgi/challenge' not in current_url and
+                                        len(page_source) > 15000):
+                                        # Verify challenge text is gone
+                                        page_lower_check = page_source.lower()
+                                        if 'just a moment' not in page_lower_check and 'verifying you are human' not in page_lower_check:
+                                            elapsed = time.time() - start_time
+                                            self.logger.info(f"✅ Turnstile challenge completed! (took {elapsed:.1f}s)")
+                                            time.sleep(random.uniform(2, 3))
+                                            return True
+                            except:
+                                pass
+                    except:
+                        pass
+                    
                     # Check if we're still on Cloudflare challenge URL
                     if 'challenges.cloudflare.com' in current_url or '/cdn-cgi/challenge' in current_url:
                         # Still on challenge page, continue waiting
@@ -913,6 +1336,30 @@ class BaseScraper(ABC):
                             "ray id" in page_preview or
                             "cf-browser-verification" in page_preview
                         )
+                        
+                        # Also check for Turnstile challenge indicators
+                        if not has_challenge_text:
+                            try:
+                                from selenium.webdriver.common.by import By
+                                turnstile_elements = self.driver.find_elements(By.CSS_SELECTOR,
+                                    "input[name='cf-turnstile-response'], div[id*='cf-chl-widget']")
+                                for elem in turnstile_elements:
+                                    try:
+                                        if elem.is_displayed():
+                                            # If it's an input, check if value is empty (challenge not complete)
+                                            if elem.tag_name == 'input':
+                                                value = elem.get_attribute('value') or ''
+                                                if not value or len(value) < 10:
+                                                    has_challenge_text = True
+                                                    break
+                                            else:
+                                                # Widget container visible = might still be challenge
+                                                has_challenge_text = True
+                                                break
+                                    except:
+                                        pass
+                            except:
+                                pass
                         
                         # Also check for challenge elements in DOM
                         try:
@@ -947,7 +1394,48 @@ class BaseScraper(ABC):
                         except:
                             pass
                         
-                        if not has_challenge_text and len(page_source) > 8000 and verifying_gone:  # Increased threshold
+                        # Check if this is a Turnstile challenge
+                        is_turnstile_check = 'cf-turnstile-response' in page_source.lower() or 'turnstile' in page_source.lower()
+                        
+                        # For Turnstile, also check if response token is filled
+                        turnstile_complete = False
+                        if is_turnstile_check:
+                            try:
+                                from selenium.webdriver.common.by import By
+                                turnstile_response_inputs = self.driver.find_elements(By.CSS_SELECTOR,
+                                    "input[name='cf-turnstile-response']")
+                                for response_input in turnstile_response_inputs:
+                                    try:
+                                        value = response_input.get_attribute('value') or ''
+                                        if value and len(value) > 50:  # Turnstile tokens are long
+                                            turnstile_complete = True
+                                            self.logger.info(f"✓ Turnstile response token filled ({len(value)} chars)")
+                                            break
+                                    except:
+                                        pass
+                            except:
+                                pass
+                        
+                        # Check if we have expected page elements (for Ford scraper, check for ul.list-unstyled or productSearch links)
+                        has_expected_elements = False
+                        if target_url and 'productSearch' in target_url.lower():
+                            try:
+                                from selenium.webdriver.common.by import By
+                                # Check for expected elements on the target page
+                                expected_elements = self.driver.find_elements(By.CSS_SELECTOR,
+                                    "ul.list-unstyled, a[href*='productSearch.aspx']")
+                                if expected_elements:
+                                    visible_count = sum(1 for elem in expected_elements if elem.is_displayed())
+                                    if visible_count > 0:
+                                        has_expected_elements = True
+                                        self.logger.info(f"✓ Found {visible_count} expected page element(s)")
+                            except:
+                                pass
+                        
+                        # Determine minimum page size based on whether we have expected elements
+                        min_page_size = 8000 if has_expected_elements else 15000
+                        
+                        if not has_challenge_text and len(page_source) > min_page_size and verifying_gone:
                             # Domain check if target URL provided
                             on_target = True
                             if target_url:
@@ -963,12 +1451,33 @@ class BaseScraper(ABC):
                                     except:
                                         on_target = True  # If we can't parse, assume we're on target
                             
-                            if on_target:
+                            # For Turnstile, require response token OR expected elements
+                            # For old challenges, just require on_target
+                            if is_turnstile_check:
+                                completion_ok = (turnstile_complete or has_expected_elements) and on_target
+                            else:
+                                completion_ok = on_target
+                            
+                            if completion_ok:
                                 elapsed = time.time() - start_time
                                 self.logger.info(f"✅ Cloudflare bypassed successfully! (took {elapsed:.1f}s)")
                                 # Additional wait for page to fully stabilize
                                 time.sleep(random.uniform(2, 3))  # Increased from 1-2s to 2-3s
                                 return True
+                            else:
+                                # Log why we're not completing (only log every 10 seconds to avoid spam)
+                                if int(time.time() - attempt_start) % 10 == 0:
+                                    if is_turnstile_check:
+                                        if not turnstile_complete and not has_expected_elements:
+                                            self.logger.debug("⏳ Waiting: Turnstile response token not filled and expected elements not found")
+                                    if not on_target:
+                                        self.logger.debug(f"⏳ Waiting: Not on target domain (current: {current_url[:80]})")
+                                    if has_challenge_text:
+                                        self.logger.debug("⏳ Waiting: Challenge text still present")
+                                    if len(page_source) <= min_page_size:
+                                        self.logger.debug(f"⏳ Waiting: Page too small ({len(page_source)} < {min_page_size})")
+                                    if not verifying_gone:
+                                        self.logger.debug("⏳ Waiting: Verifying elements still visible")
                     
                     # Wait before next check (with some randomness)
                     time.sleep(check_interval + random.uniform(-0.3, 0.3))
@@ -1444,7 +1953,7 @@ class BaseScraper(ABC):
             'tpms',
             'wheel lock',
             'wheel lock nut',
-            'wheel lock key',
+            'wheel lock key', 
             'wheel locking',
             'locking wheel',
             'locking wheel nut',
@@ -1543,8 +2052,8 @@ class BaseScraper(ABC):
                 pattern = r'\b' + escaped_phrase + r'\b'
                 if re.search(pattern, text):
                     if len(exclude) > longest_exclude_length:
-                        longest_exclude_match = exclude
-                        longest_exclude_length = len(exclude)
+                longest_exclude_match = exclude
+                longest_exclude_length = len(exclude)
         
         # If both match, the longer/more specific one wins
         # If only one matches, use that result
