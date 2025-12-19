@@ -64,10 +64,10 @@ class InfinitiScraper(BaseScraper):
             # Generate parts-list URLs from year/model combinations
             generated_urls = self._generate_parts_list_urls()
             
-            # Combine category URLs and generated URLs
-            all_urls = category_urls + generated_urls
+            # Combine URLs: generated URLs first, then category URLs
+            all_urls = generated_urls + category_urls
             
-            self.logger.info(f"Starting to visit {len(category_urls)} category pages and {len(generated_urls)} generated parts-list URLs (Total: {len(all_urls)})...")
+            self.logger.info(f"Starting to visit {len(generated_urls)} generated parts-list URLs and {len(category_urls)} category pages (Total: {len(all_urls)})...")
             
             # Visit each URL one by one and extract products
             for idx, url in enumerate(all_urls, 1):
