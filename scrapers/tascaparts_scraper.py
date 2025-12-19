@@ -190,8 +190,6 @@ class TascaPartsScraper(BaseScraper):
             # Strategy: Use direct URL construction since we know the search URL pattern
             page_num = 2
             max_pages = 2000  # Safety limit (64,795 results / ~50 per page = ~1,300 pages)
-            consecutive_empty_pages = 0
-            max_consecutive_empty = 4  # Stop after 4 consecutive pages with no new products
             
             while page_num <= max_pages:
                 try:
@@ -255,16 +253,9 @@ class TascaPartsScraper(BaseScraper):
                             continue
                     
                     if not page_loaded:
-                        self.logger.warning(f"Could not load page {page_num} with any URL pattern")
-                        consecutive_empty_pages += 1
-                        if consecutive_empty_pages >= max_consecutive_empty:
-                            self.logger.info(f"Stopping pagination: {consecutive_empty_pages} consecutive pages failed to load")
-                            break
+                        self.logger.warning(f"Could not load page {page_num} with any URL pattern, continuing to next page")
                         page_num += 1
                         continue
-                    
-                    # Don't reset consecutive_empty_pages here - only reset when we find new products
-                    # This ensures we properly track consecutive pages with no new products
                     
                     # Scroll to load all products on this page
                     try:
@@ -334,16 +325,6 @@ class TascaPartsScraper(BaseScraper):
                     
                     self.logger.info(f"Page {page_num}: Found {len(page_links)} product links, {page_urls_count} new unique URLs (Total: {len(product_urls)})")
                     
-                    # If no new products found, increment empty counter
-                    if page_urls_count == 0:
-                        consecutive_empty_pages += 1
-                        self.logger.warning(f"No new products on page {page_num} (consecutive empty: {consecutive_empty_pages})")
-                        if consecutive_empty_pages >= max_consecutive_empty:
-                            self.logger.info(f"Stopping pagination: {consecutive_empty_pages} consecutive pages with no new products")
-                            break
-                    else:
-                        consecutive_empty_pages = 0  # Reset counter if we found new products
-                    
                     page_num += 1
                     
                     # Add delay between pages to avoid being blocked
@@ -351,10 +332,6 @@ class TascaPartsScraper(BaseScraper):
                     
                 except Exception as e:
                     self.logger.error(f"Error processing page {page_num}: {str(e)}")
-                    consecutive_empty_pages += 1
-                    if consecutive_empty_pages >= max_consecutive_empty:
-                        self.logger.warning(f"Stopping pagination due to errors")
-                        break
                     page_num += 1
                     continue
             

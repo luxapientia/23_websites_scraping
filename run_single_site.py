@@ -30,6 +30,7 @@ from scrapers.toyota_scraper import ToyotaScraper
 from scrapers.volkswagen_scraper import VolkswagenScraper
 from scrapers.volvo_scraper import VolvoScraper
 from scrapers.generic_scraper import GenericScraper
+from scrapers.tascaparts_scraper import TascaPartsScraper
 from utils.data_processor import DataProcessor
 from utils.excel_exporter import ExcelExporter
 
@@ -85,8 +86,7 @@ def create_scraper(site_config):
     site_name = site_config.get('name', '')
     
     if site_name == 'tascaparts':
-        return TascaPartsScraper()  # pyright: ignore[reportUndefinedVariable]
-    elif site_name == 'acuraparts':
+        return TascaPartsScraper()
         return AcuraPartsWarehouseScraper()
     elif site_name == 'moparonline':
         return MoparOnlinePartsScraper()

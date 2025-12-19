@@ -86,8 +86,6 @@ class NissanScraper(BaseScraper):
             # Handle pagination - iterate through all pages
             page_num = 2
             max_pages = 2000  # Safety limit
-            consecutive_empty_pages = 0
-            max_consecutive_empty = 4  # Stop after 4 consecutive pages with no new products
             
             while page_num <= max_pages:
                 try:
@@ -99,10 +97,7 @@ class NissanScraper(BaseScraper):
                         self.driver.set_page_load_timeout(60)
                         pag_html = self.get_page(pag_url, use_selenium=True, wait_time=2)
                         if not pag_html or len(pag_html) < 5000:
-                            self.logger.warning(f"Page {page_num} content too short, stopping pagination")
-                            consecutive_empty_pages += 1
-                            if consecutive_empty_pages >= max_consecutive_empty:
-                                break
+                            self.logger.warning(f"Page {page_num} content too short, continuing to next page")
                             page_num += 1
                             continue
                         
@@ -120,9 +115,6 @@ class NissanScraper(BaseScraper):
                         soup = BeautifulSoup(pag_html, 'lxml')
                     except Exception as e:
                         self.logger.warning(f"Error loading page {page_num}: {str(e)}")
-                        consecutive_empty_pages += 1
-                        if consecutive_empty_pages >= max_consecutive_empty:
-                            break
                         page_num += 1
                         continue
                     finally:
@@ -136,22 +128,10 @@ class NissanScraper(BaseScraper):
                     page_count = self._extract_products_from_page(soup, product_urls)
                     self.logger.info(f"Page {page_num}: Found {page_count} new unique URLs (Total: {len(product_urls)})")
                     
-                    # Check if we found any new products
-                    if page_count == 0:
-                        consecutive_empty_pages += 1
-                        if consecutive_empty_pages >= max_consecutive_empty:
-                            self.logger.info(f"No new products found on {max_consecutive_empty} consecutive pages, stopping pagination")
-                            break
-                    else:
-                        consecutive_empty_pages = 0  # Reset counter if we found products
-                    
                     page_num += 1
                     
                 except Exception as e:
                     self.logger.error(f"Error processing page {page_num}: {str(e)}")
-                    consecutive_empty_pages += 1
-                    if consecutive_empty_pages >= max_consecutive_empty:
-                        break
                     page_num += 1
                     continue
             
