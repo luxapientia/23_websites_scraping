@@ -39,8 +39,10 @@ class InfinitiScraper(BaseScraper):
     
     def _search_for_wheels(self):
         """
-        Visit all 7 wheel category pages one by one and extract all product URLs
-        Similar to Acura scraper's method - visits multiple category URLs sequentially
+        Visit all category pages and generated parts-list URLs to extract all product URLs
+        Combines:
+        1. Original 7 category pages
+        2. Generated parts-list URLs from year/model combinations
         """
         product_urls = []
         
@@ -48,7 +50,7 @@ class InfinitiScraper(BaseScraper):
             if not self.driver:
                 self.ensure_driver()
             
-            # All 7 category URLs to visit one by one
+            # All 7 original category URLs to visit one by one
             category_urls = [
                 f"{self.base_url}/oem-infiniti-spare_wheel.html",
                 f"{self.base_url}/oem-infiniti-wheel_cover.html",
@@ -59,25 +61,31 @@ class InfinitiScraper(BaseScraper):
                 f"{self.base_url}/accessories/infiniti-20_inch_wheel.html",
             ]
             
-            self.logger.info(f"Starting to visit {len(category_urls)} category pages one by one...")
+            # Generate parts-list URLs from year/model combinations
+            generated_urls = self._generate_parts_list_urls()
             
-            # Visit each category URL one by one and extract products
-            for idx, category_url in enumerate(category_urls, 1):
+            # Combine category URLs and generated URLs
+            all_urls = category_urls + generated_urls
+            
+            self.logger.info(f"Starting to visit {len(category_urls)} category pages and {len(generated_urls)} generated parts-list URLs (Total: {len(all_urls)})...")
+            
+            # Visit each URL one by one and extract products
+            for idx, url in enumerate(all_urls, 1):
                 try:
-                    self.logger.info(f"[{idx}/{len(category_urls)}] Visiting category page: {category_url}")
-                    category_products = self._extract_products_from_category(category_url, product_urls)
-                    self.logger.info(f"[{idx}/{len(category_urls)}] Category completed: Found {len(category_products)} new products (Total so far: {len(product_urls)})")
+                    self.logger.info(f"[{idx}/{len(all_urls)}] Visiting: {url}")
+                    category_products = self._extract_products_from_category(url, product_urls)
+                    self.logger.info(f"[{idx}/{len(all_urls)}] Completed: Found {len(category_products)} new products (Total so far: {len(product_urls)})")
                     
-                    # Delay between categories
-                    if idx < len(category_urls):
+                    # Delay between URLs
+                    if idx < len(all_urls):
                         time.sleep(random.uniform(1, 2))
                 except Exception as e:
-                    self.logger.error(f"Error processing category {idx}/{len(category_urls)} ({category_url}): {str(e)}")
+                    self.logger.error(f"Error processing URL {idx}/{len(all_urls)} ({url}): {str(e)}")
                     import traceback
                     self.logger.debug(f"Traceback: {traceback.format_exc()}")
                     continue
             
-            self.logger.info(f"All {len(category_urls)} category pages processed. Total unique product URLs found: {len(product_urls)}")
+            self.logger.info(f"All {len(all_urls)} URLs processed. Total unique product URLs found: {len(product_urls)}")
             
         except Exception as e:
             self.logger.error(f"Error searching for wheels: {str(e)}")
@@ -85,6 +93,56 @@ class InfinitiScraper(BaseScraper):
             self.logger.debug(f"Traceback: {traceback.format_exc()}")
         
         return product_urls
+    
+    def _generate_parts_list_urls(self):
+        """
+        Generate parts-list URLs for all Infiniti models with their specific years
+        Pattern for years >= 2020: https://www.infinitipartsdeal.com/parts-list/[year]-infiniti-[model]/wheels-covers-trim.html
+        Pattern for years < 2020: https://www.infinitipartsdeal.com/parts-list/[year]-infiniti-[model]/axle_suspension/road_wheel_tire.html
+        """
+        # Year to models mapping
+        year_models = {
+            2024: ['QX55', 'QX80'],
+            2023: ['Q50', 'QX50', 'QX55', 'QX60', 'QX80'],
+            2022: ['Q50', 'Q60', 'QX50', 'QX55', 'QX60', 'QX80'],
+            2021: ['Q50', 'Q60', 'QX50', 'QX80'],
+            2020: ['Q50', 'Q60', 'QX50', 'QX60', 'QX80'],
+            2019: ['Q50', 'Q60', 'Q70', 'Q70L', 'QX30', 'QX50', 'QX60', 'QX80'],
+            2018: ['Q50', 'Q60', 'Q70', 'Q70L', 'QX30', 'QX60', 'QX80'],
+            2017: ['Q50', 'Q60', 'Q70', 'Q70L', 'QX30', 'QX50', 'QX60', 'QX70', 'QX80'],
+            2016: ['Q50', 'Q70', 'Q70L', 'QX50', 'QX60', 'QX70', 'QX80'],
+            2015: ['Q40', 'Q50', 'Q60', 'Q70', 'Q70L', 'QX50', 'QX60', 'QX70', 'QX80'],
+            2014: ['Q50', 'Q60', 'Q70', 'QX50', 'QX60', 'QX70', 'QX80'],
+            2013: ['EX37', 'FX37', 'G37', 'JX35', 'M35h', 'M37', 'M56', 'QX56'],
+            2012: ['EX35', 'FX35', 'FX50', 'G25', 'G37', 'M35h', 'M37', 'M56', 'QX56'],
+            2011: ['EX35', 'FX35', 'FX50', 'G25', 'G37', 'M37', 'M56', 'QX56'],
+            2010: ['EX35', 'FX35', 'FX50', 'G37', 'M35', 'M45', 'QX56'],
+        }
+        
+        generated_urls = []
+        total_combinations = 0
+        
+        for year, models in year_models.items():
+            # Determine URL pattern based on year
+            if year >= 2020:
+                # Pattern for years >= 2020
+                url_pattern = f"{self.base_url}/parts-list/{{year}}-infiniti-{{model}}/wheels-covers-trim.html"
+            else:
+                # Pattern for years < 2020
+                url_pattern = f"{self.base_url}/parts-list/{{year}}-infiniti-{{model}}/axle_suspension/road_wheel_tire.html"
+            
+            # Generate URLs for each model in this year
+            for model in models:
+                # Convert model name to URL format (lowercase)
+                model_url = model.lower()
+                
+                # Generate URL
+                url = url_pattern.format(year=year, model=model_url)
+                generated_urls.append(url)
+                total_combinations += 1
+        
+        self.logger.info(f"Generated {len(generated_urls)} parts-list URLs from {total_combinations} year-model combinations")
+        return generated_urls
     
     def _extract_products_from_category(self, category_url, existing_urls):
         """
