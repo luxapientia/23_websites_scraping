@@ -707,7 +707,7 @@ class BaseScraper(ABC):
                 # SECONDARY CHECK: Only check for challenge if page is SMALL (<5KB)
                 # Challenge pages are typically very small, normal pages are much larger
                 try:
-                page_source = self.driver.page_source
+                    page_source = self.driver.page_source
                 except (ConnectionResetError, OSError, Exception) as e:
                     # Connection lost while getting page source
                     self.logger.debug(f"Connection lost while getting page source: {str(e)}")
@@ -2052,8 +2052,8 @@ class BaseScraper(ABC):
                 pattern = r'\b' + escaped_phrase + r'\b'
                 if re.search(pattern, text):
                     if len(exclude) > longest_exclude_length:
-                longest_exclude_match = exclude
-                longest_exclude_length = len(exclude)
+                        longest_exclude_match = exclude
+                        longest_exclude_length = len(exclude)
         
         # If both match, the longer/more specific one wins
         # If only one matches, use that result
