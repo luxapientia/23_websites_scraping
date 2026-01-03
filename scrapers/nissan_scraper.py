@@ -740,32 +740,98 @@ class NissanScraper(BaseScraper):
                 except json.JSONDecodeError:
                     pass
             
-            # Method 2: Extract from HTML fitment table
-            if not product_data['fitments']:
-                fitment_table = soup.find('table', class_='fitment-table')
-                if fitment_table:
-                    tbody = fitment_table.find('tbody', class_='fitment-table-body')
-                    if tbody:
-                        rows = tbody.find_all('tr', class_='fitment-row')
-                        for row in rows:
-                            try:
-                                # Try class-based selectors first (more reliable)
-                                year_cell = row.find('td', class_='fitment-year')
-                                make_cell = row.find('td', class_='fitment-make')
-                                model_cell = row.find('td', class_='fitment-model')
-                                trim_cell = row.find('td', class_='fitment-trim')
-                                engine_cell = row.find('td', class_='fitment-engine')
+            # Method 2: Extract from HTML fitment table (always try this method to ensure all fitments are captured)
+            # Store initial count to check if we found new fitments
+            initial_fitment_count = len(product_data['fitments'])
+            
+            # Try multiple selectors to find fitment table
+            fitment_table = soup.find('table', class_='fitment-table')
+            if not fitment_table:
+                # Try alternative selectors
+                fitment_table = soup.find('table', class_=re.compile(r'fitment', re.I))
+            if not fitment_table:
+                # Try finding table by id or data attributes
+                fitment_table = soup.find('table', id=re.compile(r'fitment', re.I))
+            if not fitment_table:
+                # Try finding any table that might contain fitment data
+                all_tables = soup.find_all('table')
+                for table in all_tables:
+                    # Check if table contains fitment-related text
+                    table_text = table.get_text().lower()
+                    if any(keyword in table_text for keyword in ['year', 'make', 'model', 'trim', 'engine', 'fitment']):
+                        # Check if it has multiple rows (likely a data table)
+                        rows = table.find_all('tr')
+                        if len(rows) > 1:
+                            fitment_table = table
+                            break
+            
+            if fitment_table:
+                tbody = fitment_table.find('tbody', class_='fitment-table-body')
+                if not tbody:
+                    # Fallback: try to find tbody without class
+                    tbody = fitment_table.find('tbody')
+                if tbody:
+                    rows = tbody.find_all('tr', class_='fitment-row')
+                    if not rows:
+                        # Fallback: try to find all tr elements in tbody
+                        rows = tbody.find_all('tr')
+                    for row in rows:
+                        try:
+                            # Skip header rows
+                            if row.find('th'):
+                                continue
+                            
+                            # Try class-based selectors first (more reliable)
+                            year_cell = row.find('td', class_='fitment-year')
+                            make_cell = row.find('td', class_='fitment-make')
+                            model_cell = row.find('td', class_='fitment-model')
+                            trim_cell = row.find('td', class_='fitment-trim')
+                            engine_cell = row.find('td', class_='fitment-engine')
+                            
+                            if year_cell and make_cell and model_cell:
+                                year = year_cell.get_text(strip=True)
+                                make = make_cell.get_text(strip=True)
+                                model = model_cell.get_text(strip=True)
+                                trim_text = trim_cell.get_text(strip=True) if trim_cell else ''
+                                engine_text = engine_cell.get_text(strip=True) if engine_cell else ''
                                 
-                                if year_cell and make_cell and model_cell:
-                                    year = year_cell.get_text(strip=True)
-                                    make = make_cell.get_text(strip=True)
-                                    model = model_cell.get_text(strip=True)
-                                    trim_text = trim_cell.get_text(strip=True) if trim_cell else ''
-                                    engine_text = engine_cell.get_text(strip=True) if engine_cell else ''
+                                # Skip empty rows
+                                if not year or not make or not model:
+                                    continue
+                                
+                                # Split trim values by comma (e.g., "Evolution GSR, Evolution MR")
+                                trims = [t.strip() for t in trim_text.split(',')] if trim_text else ['']
+                                # Split engine values by comma if multiple engines exist
+                                engines = [e.strip() for e in engine_text.split(',')] if engine_text else ['']
+                                
+                                # Generate all combinations: trim × engine
+                                for trim_val in trims:
+                                    for engine_val in engines:
+                                        product_data['fitments'].append({
+                                            'year': year,
+                                            'make': make,
+                                            'model': model,
+                                            'trim': trim_val,
+                                            'engine': engine_val
+                                        })
+                            else:
+                                # Fallback to index-based if class-based fails
+                                cells = row.find_all('td')
+                                if len(cells) >= 3:  # At least year, make, model
+                                    year = cells[0].get_text(strip=True)
+                                    make = cells[1].get_text(strip=True)
+                                    model = cells[2].get_text(strip=True)
                                     
-                                    # Split trim values by comma (e.g., "Evolution GSR, Evolution MR")
+                                    # Skip empty rows
+                                    if not year or not make or not model:
+                                        continue
+                                    
+                                    trim_text = cells[3].get_text(strip=True) if len(cells) > 3 else ''
+                                    engine_text = cells[4].get_text(strip=True) if len(cells) > 4 else ''
+                                    
+                                    # Split trim values by comma
                                     trims = [t.strip() for t in trim_text.split(',')] if trim_text else ['']
-                                    # Split engine values by comma if multiple engines exist
+                                    # Split engine values by comma
                                     engines = [e.strip() for e in engine_text.split(',')] if engine_text else ['']
                                     
                                     # Generate all combinations: trim × engine
@@ -778,35 +844,30 @@ class NissanScraper(BaseScraper):
                                                 'trim': trim_val,
                                                 'engine': engine_val
                                             })
-                                else:
-                                    # Fallback to index-based if class-based fails
-                                    cells = row.find_all('td')
-                                    if len(cells) >= 5:
-                                        year = cells[0].get_text(strip=True)
-                                        make = cells[1].get_text(strip=True)
-                                        model = cells[2].get_text(strip=True)
-                                        trim_text = cells[3].get_text(strip=True)
-                                        engine_text = cells[4].get_text(strip=True)
-                                        
-                                        # Split trim values by comma
-                                        trims = [t.strip() for t in trim_text.split(',')] if trim_text else ['']
-                                        # Split engine values by comma
-                                        engines = [e.strip() for e in engine_text.split(',')] if engine_text else ['']
-                                        
-                                        # Generate all combinations: trim × engine
-                                        for trim_val in trims:
-                                            for engine_val in engines:
-                                                product_data['fitments'].append({
-                                                    'year': year,
-                                                    'make': make,
-                                                    'model': model,
-                                                    'trim': trim_val,
-                                                    'engine': engine_val
-                                                })
-                            except:
-                                continue
+                        except:
+                            continue
             
-            # Method 3: Fallback - Extract from generic script tag
+            # Remove duplicate fitments (in case both Method 1 and Method 2 found the same fitments)
+            if len(product_data['fitments']) > initial_fitment_count:
+                # Create a set of unique fitment signatures
+                seen_fitments = set()
+                unique_fitments = []
+                for fitment in product_data['fitments']:
+                    # Create a signature from the fitment data
+                    signature = (
+                        str(fitment.get('year', '')).strip(),
+                        str(fitment.get('make', '')).strip(),
+                        str(fitment.get('model', '')).strip(),
+                        str(fitment.get('trim', '')).strip(),
+                        str(fitment.get('engine', '')).strip()
+                    )
+                    if signature not in seen_fitments:
+                        seen_fitments.add(signature)
+                        unique_fitments.append(fitment)
+                product_data['fitments'] = unique_fitments
+                self.logger.info(f"Found {len(product_data['fitments'])} unique fitments (Method 1: {initial_fitment_count}, Method 2: {len(product_data['fitments']) - initial_fitment_count})")
+            
+            # Method 3: Fallback - Extract from generic script tag (only if no fitments found yet)
             if not product_data['fitments']:
                 product_data_script_generic = soup.find('script', type='application/json')
                 if product_data_script_generic and product_data_script_generic.string:
