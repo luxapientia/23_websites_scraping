@@ -86,6 +86,8 @@ class NissanScraper(BaseScraper):
             # Handle pagination - iterate through all pages
             page_num = 2
             max_pages = 2000  # Safety limit
+            consecutive_zero_count = 0  # Track consecutive pages with 0 unique URLs
+            max_consecutive_zero = 3  # Stop after 3 consecutive pages with 0 unique URLs
             
             while page_num <= max_pages:
                 try:
@@ -98,6 +100,10 @@ class NissanScraper(BaseScraper):
                         pag_html = self.get_page(pag_url, use_selenium=True, wait_time=2)
                         if not pag_html or len(pag_html) < 5000:
                             self.logger.warning(f"Page {page_num} content too short, continuing to next page")
+                            consecutive_zero_count += 1
+                            if consecutive_zero_count >= max_consecutive_zero:
+                                self.logger.info(f"Stopping pagination: {consecutive_zero_count} consecutive pages with 0 unique URLs")
+                                break
                             page_num += 1
                             continue
                         
@@ -115,6 +121,10 @@ class NissanScraper(BaseScraper):
                         soup = BeautifulSoup(pag_html, 'lxml')
                     except Exception as e:
                         self.logger.warning(f"Error loading page {page_num}: {str(e)}")
+                        consecutive_zero_count += 1
+                        if consecutive_zero_count >= max_consecutive_zero:
+                            self.logger.info(f"Stopping pagination: {consecutive_zero_count} consecutive pages with 0 unique URLs")
+                            break
                         page_num += 1
                         continue
                     finally:
@@ -128,10 +138,24 @@ class NissanScraper(BaseScraper):
                     page_count = self._extract_products_from_page(soup, product_urls)
                     self.logger.info(f"Page {page_num}: Found {page_count} new unique URLs (Total: {len(product_urls)})")
                     
+                    # Check if we found 0 unique URLs
+                    if page_count == 0:
+                        consecutive_zero_count += 1
+                        self.logger.warning(f"No new unique URLs on page {page_num} (consecutive: {consecutive_zero_count})")
+                        if consecutive_zero_count >= max_consecutive_zero:
+                            self.logger.info(f"Stopping pagination: {consecutive_zero_count} consecutive pages with 0 unique URLs")
+                            break
+                    else:
+                        consecutive_zero_count = 0  # Reset counter if we found new URLs
+                    
                     page_num += 1
                     
                 except Exception as e:
                     self.logger.error(f"Error processing page {page_num}: {str(e)}")
+                    consecutive_zero_count += 1
+                    if consecutive_zero_count >= max_consecutive_zero:
+                        self.logger.info(f"Stopping pagination: {consecutive_zero_count} consecutive pages with 0 unique URLs")
+                        break
                     page_num += 1
                     continue
             
