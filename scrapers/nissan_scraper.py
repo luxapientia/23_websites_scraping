@@ -305,6 +305,167 @@ class NissanScraper(BaseScraper):
         except:
             pass
     
+    def _scroll_to_fitment_section(self):
+        """Scroll to the fitment table section to trigger loading"""
+        try:
+            # Try to find fitment table or related elements
+            selectors = [
+                'table.fitment-table',
+                'table[class*="fitment"]',
+                'div[class*="fitment"]',
+                'tbody.fitment-table-body',
+                'div#fitment',
+                'div[data-fitment]'
+            ]
+            
+            for selector in selectors:
+                try:
+                    element = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    # Scroll element into view
+                    self.driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", element)
+                    time.sleep(1)
+                    self.logger.info(f"Scrolled to fitment section using selector: {selector}")
+                    return True
+                except:
+                    continue
+            
+            # Fallback: Scroll down gradually to find fitment section
+            self.logger.info("Fitment section not found, scrolling down gradually...")
+            for i in range(5):
+                self.driver.execute_script(f"window.scrollTo(0, {500 * (i + 1)});")
+                time.sleep(0.5)
+                # Check if fitment table appeared
+                try:
+                    self.driver.find_element(By.CSS_SELECTOR, 'table.fitment-table')
+                    return True
+                except:
+                    continue
+            
+            return False
+        except Exception as e:
+            self.logger.warning(f"Error scrolling to fitment section: {str(e)}")
+            return False
+    
+    def _wait_for_fitment_table(self, timeout=30):
+        """Wait for fitment table to appear and load"""
+        try:
+            wait = WebDriverWait(self.driver, timeout)
+            
+            # Try multiple selectors for fitment table
+            selectors = [
+                'table.fitment-table',
+                'table[class*="fitment"]',
+                'tbody.fitment-table-body',
+                'table tbody tr.fitment-row',
+                'div[class*="fitment"] table',
+            ]
+            
+            for selector in selectors:
+                try:
+                    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
+                    # Check if table has rows
+                    rows = self.driver.find_elements(By.CSS_SELECTOR, f'{selector} tr.fitment-row, {selector} tbody tr')
+                    if len(rows) > 0:
+                        self.logger.info(f"✓ Fitment table found with {len(rows)} rows via selector: {selector}")
+                        return True
+                except:
+                    continue
+            
+            return False
+        except Exception as e:
+            self.logger.warning(f"Error waiting for fitment table: {str(e)}")
+            return False
+    
+    def _click_show_more_fitments(self, max_attempts=5):
+        """Click 'Show More' button if present to load all fitments"""
+        try:
+            # Common selectors for "Show More" buttons
+            show_more_selectors = [
+                'button[class*="show-more"]',
+                'button[class*="load-more"]',
+                'a[class*="show-more"]',
+                'a[class*="load-more"]',
+                'button:contains("Show More")',
+                'button:contains("Load More")',
+                'a:contains("Show More")',
+                'a:contains("Load More")',
+                'button[aria-label*="more"]',
+                'button[aria-label*="More"]',
+            ]
+            
+            for attempt in range(max_attempts):
+                for selector in show_more_selectors:
+                    try:
+                        # Try XPath for text-based search
+                        if ':contains(' in selector:
+                            text = selector.split(':contains("')[1].split('")')[0]
+                            xpath = f"//button[contains(text(), '{text}')] | //a[contains(text(), '{text}')]"
+                            elements = self.driver.find_elements(By.XPATH, xpath)
+                        else:
+                            elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                        
+                        for element in elements:
+                            try:
+                                # Check if button is visible and clickable
+                                if element.is_displayed() and element.is_enabled():
+                                    text = element.text.strip().lower()
+                                    if 'show more' in text or 'load more' in text or 'more' in text:
+                                        # Scroll to button
+                                        self.driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", element)
+                                        time.sleep(0.5)
+                                        # Click button
+                                        element.click()
+                                        self.logger.info(f"✓ Clicked 'Show More' button (attempt {attempt + 1})")
+                                        time.sleep(2)  # Wait for content to load
+                                        return True
+                            except:
+                                continue
+                    except:
+                        continue
+                
+                if attempt < max_attempts - 1:
+                    time.sleep(1)
+            
+            return False
+        except Exception as e:
+            self.logger.debug(f"Error clicking show more: {str(e)}")
+            return False
+    
+    def _wait_for_all_fitments_loaded(self, timeout=30, min_rows=1):
+        """Wait for all fitment rows to be loaded"""
+        try:
+            wait = WebDriverWait(self.driver, timeout)
+            
+            # Wait for fitment rows to appear
+            row_selectors = [
+                'table.fitment-table tbody tr.fitment-row',
+                'table.fitment-table tbody tr',
+                'table[class*="fitment"] tbody tr',
+                'tbody.fitment-table-body tr.fitment-row',
+                'tbody.fitment-table-body tr',
+            ]
+            
+            for selector in row_selectors:
+                try:
+                    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
+                    # Get all rows
+                    rows = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    
+                    if len(rows) >= min_rows:
+                        # Wait a bit more to ensure all rows are loaded
+                        time.sleep(2)
+                        # Check again
+                        rows = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                        self.logger.info(f"✓ Found {len(rows)} fitment rows")
+                        return True
+                except:
+                    continue
+            
+            return False
+        except Exception as e:
+            self.logger.warning(f"Error waiting for fitment rows: {str(e)}")
+            return False
+    
     def scrape_product(self, url):
         """Scrape single product from parts.nissanusa.com"""
         max_retries = 5
@@ -371,6 +532,42 @@ class NissanScraper(BaseScraper):
                             continue
                         else:
                             return None
+                    
+                    # Wait for fitment data to load completely
+                    self.logger.info("🔍 Waiting for fitment data to load...")
+                    
+                    # Step 1: Scroll to fitment section
+                    self._scroll_to_fitment_section()
+                    time.sleep(1)
+                    
+                    # Step 2: Wait for fitment table to appear
+                    fitment_table_found = self._wait_for_fitment_table(timeout=20)
+                    if fitment_table_found:
+                        self.logger.info("✓ Fitment table found")
+                    else:
+                        self.logger.warning("⚠️ Fitment table not found immediately, continuing anyway...")
+                    
+                    # Step 3: Click "Show More" button if present
+                    self.logger.info("🔍 Checking for 'Show More' button...")
+                    show_more_clicked = self._click_show_more_fitments(max_attempts=3)
+                    if show_more_clicked:
+                        self.logger.info("✓ 'Show More' button clicked")
+                    else:
+                        self.logger.info("ℹ️ 'Show More' button not found or already clicked")
+                    
+                    # Step 4: Wait for all fitment rows to load
+                    self.logger.info("🔍 Waiting for all fitment rows to load...")
+                    fitments_loaded = self._wait_for_all_fitments_loaded(timeout=20, min_rows=1)
+                    if fitments_loaded:
+                        self.logger.info("✓ All fitment rows loaded")
+                    else:
+                        self.logger.warning("⚠️ Fitment rows may not be fully loaded, continuing anyway...")
+                    
+                    # Additional wait to ensure everything is stable
+                    time.sleep(2)
+                    
+                    # Get fresh HTML after all fitments are loaded
+                    html = self.driver.page_source
                     
                     self.page_load_timeout = original_timeout
                     self.driver.set_page_load_timeout(original_timeout)
@@ -742,19 +939,39 @@ class NissanScraper(BaseScraper):
             
             # Method 2: Extract from HTML fitment table
             if not product_data['fitments']:
-                fitment_table = soup.find('table', class_='fitment-table')
+                # Try multiple table selectors
+                fitment_table = (soup.find('table', class_='fitment-table') or 
+                               soup.find('table', class_=re.compile(r'fitment', re.I)) or
+                               soup.find('table', id=re.compile(r'fitment', re.I)))
+                
                 if fitment_table:
-                    tbody = fitment_table.find('tbody', class_='fitment-table-body')
+                    # Try to find tbody
+                    tbody = (fitment_table.find('tbody', class_='fitment-table-body') or
+                            fitment_table.find('tbody', class_=re.compile(r'fitment', re.I)) or
+                            fitment_table.find('tbody'))
+                    
                     if tbody:
-                        rows = tbody.find_all('tr', class_='fitment-row')
+                        # Try multiple row selectors
+                        rows = (tbody.find_all('tr', class_='fitment-row') or
+                               tbody.find_all('tr', class_=re.compile(r'fitment', re.I)) or
+                               tbody.find_all('tr'))
+                        
+                        # Filter out header rows
+                        rows = [r for r in rows if r.find('th') is None]
+                        
                         for row in rows:
                             try:
                                 # Try class-based selectors first (more reliable)
-                                year_cell = row.find('td', class_='fitment-year')
-                                make_cell = row.find('td', class_='fitment-make')
-                                model_cell = row.find('td', class_='fitment-model')
-                                trim_cell = row.find('td', class_='fitment-trim')
-                                engine_cell = row.find('td', class_='fitment-engine')
+                                year_cell = (row.find('td', class_='fitment-year') or
+                                            row.find('td', class_=re.compile(r'year', re.I)))
+                                make_cell = (row.find('td', class_='fitment-make') or
+                                           row.find('td', class_=re.compile(r'make', re.I)))
+                                model_cell = (row.find('td', class_='fitment-model') or
+                                            row.find('td', class_=re.compile(r'model', re.I)))
+                                trim_cell = (row.find('td', class_='fitment-trim') or
+                                           row.find('td', class_=re.compile(r'trim', re.I)))
+                                engine_cell = (row.find('td', class_='fitment-engine') or
+                                             row.find('td', class_=re.compile(r'engine', re.I)))
                                 
                                 if year_cell and make_cell and model_cell:
                                     year = year_cell.get_text(strip=True)
@@ -763,7 +980,11 @@ class NissanScraper(BaseScraper):
                                     trim_text = trim_cell.get_text(strip=True) if trim_cell else ''
                                     engine_text = engine_cell.get_text(strip=True) if engine_cell else ''
                                     
-                                    # Split trim values by comma (e.g., "Evolution GSR, Evolution MR")
+                                    # Skip if year/make/model are empty
+                                    if not year or not make or not model:
+                                        continue
+                                    
+                                    # Split trim values by comma (e.g., "S, SL, SV")
                                     trims = [t.strip() for t in trim_text.split(',')] if trim_text else ['']
                                     # Split engine values by comma if multiple engines exist
                                     engines = [e.strip() for e in engine_text.split(',')] if engine_text else ['']
@@ -781,12 +1002,16 @@ class NissanScraper(BaseScraper):
                                 else:
                                     # Fallback to index-based if class-based fails
                                     cells = row.find_all('td')
-                                    if len(cells) >= 5:
+                                    if len(cells) >= 3:  # At least year, make, model
                                         year = cells[0].get_text(strip=True)
-                                        make = cells[1].get_text(strip=True)
-                                        model = cells[2].get_text(strip=True)
-                                        trim_text = cells[3].get_text(strip=True)
-                                        engine_text = cells[4].get_text(strip=True)
+                                        make = cells[1].get_text(strip=True) if len(cells) > 1 else ''
+                                        model = cells[2].get_text(strip=True) if len(cells) > 2 else ''
+                                        trim_text = cells[3].get_text(strip=True) if len(cells) > 3 else ''
+                                        engine_text = cells[4].get_text(strip=True) if len(cells) > 4 else ''
+                                        
+                                        # Skip if year/make/model are empty
+                                        if not year or not make or not model:
+                                            continue
                                         
                                         # Split trim values by comma
                                         trims = [t.strip() for t in trim_text.split(',')] if trim_text else ['']
@@ -794,6 +1019,38 @@ class NissanScraper(BaseScraper):
                                         engines = [e.strip() for e in engine_text.split(',')] if engine_text else ['']
                                         
                                         # Generate all combinations: trim × engine
+                                        for trim_val in trims:
+                                            for engine_val in engines:
+                                                product_data['fitments'].append({
+                                                    'year': year,
+                                                    'make': make,
+                                                    'model': model,
+                                                    'trim': trim_val,
+                                                    'engine': engine_val
+                                                })
+                            except Exception as e:
+                                self.logger.debug(f"Error extracting fitment row: {str(e)}")
+                                continue
+                    
+                    # If no tbody, try direct rows in table
+                    if not product_data['fitments']:
+                        rows = fitment_table.find_all('tr')
+                        rows = [r for r in rows if r.find('th') is None]  # Filter header rows
+                        
+                        for row in rows:
+                            try:
+                                cells = row.find_all(['td', 'th'])
+                                if len(cells) >= 3:
+                                    year = cells[0].get_text(strip=True)
+                                    make = cells[1].get_text(strip=True) if len(cells) > 1 else ''
+                                    model = cells[2].get_text(strip=True) if len(cells) > 2 else ''
+                                    trim_text = cells[3].get_text(strip=True) if len(cells) > 3 else ''
+                                    engine_text = cells[4].get_text(strip=True) if len(cells) > 4 else ''
+                                    
+                                    if year and make and model:
+                                        trims = [t.strip() for t in trim_text.split(',')] if trim_text else ['']
+                                        engines = [e.strip() for e in engine_text.split(',')] if engine_text else ['']
+                                        
                                         for trim_val in trims:
                                             for engine_val in engines:
                                                 product_data['fitments'].append({
