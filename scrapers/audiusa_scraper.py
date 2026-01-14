@@ -21,9 +21,10 @@ class AudiUSAScraper(BaseScraperWithExtension):
         
     def get_product_urls(self):
         """
-        Get all wheel product URLs from the specific search URL on parts.audiusa.com
-        Only collects URLs from: productSearch.aspx?ukey_make=5792&searchTerm=wheel&numResults=250
-        No pagination - all results are on a single page
+        Get all wheel product URLs from year-specific search URLs on parts.audiusa.com
+        Collects URLs from search pages for years 1984-2026 (43 years total)
+        Pattern: productSearch.aspx?ukey_make=5792&modelYear=[year]&...&searchTerm=wheel
+        No pagination - all results are on a single page per year
         """
         product_urls = []
         
@@ -99,9 +100,10 @@ class AudiUSAScraper(BaseScraperWithExtension):
     
     def _search_for_wheels(self):
         """
-        Search for wheels using the specific search URL
-        URL: productSearch.aspx?ukey_make=5792&searchTerm=wheel&numResults=250
-        No pagination - all results are on a single page
+        Search for wheels using year-specific search URLs
+        Generates URLs for years 1984-2026 (43 years total)
+        Pattern: productSearch.aspx?ukey_make=5792&modelYear=[year]&...&searchTerm=wheel
+        No pagination - all results are on a single page per year
         """
         product_urls = []
         
@@ -109,70 +111,91 @@ class AudiUSAScraper(BaseScraperWithExtension):
             if not self.driver:
                 self.ensure_driver()
             
-            # Use the specific search URL provided
-            search_url = "https://parts.audiusa.com/productSearch.aspx?ukey_make=5792&modelYear=0&ukey_model=0&ukey_trimLevel=0&ukey_driveline=0&ukey_Category=0&numResults=250&sortOrder=Relevance&ukey_tag=0&isOnSale=0&isAccessory=0&isPerformance=0&showAllModels=1&searchTerm=wheel"
-            self.logger.info(f"Loading search page: {search_url}")
+            # Generate search URLs for years 1984-2026 (43 years)
+            years = list(range(1984, 2027))  # 1984 to 2026 inclusive
+            total_years = len(years)
+            self.logger.info(f"Searching for wheels across {total_years} years (1984-2026)")
             
-            # Increase page load timeout for search page (to allow Cloudflare to complete)
-            original_timeout = self.page_load_timeout
-            try:
-                self.page_load_timeout = 60  # Increase to 60 seconds for search page
-                self.driver.set_page_load_timeout(60)
-                
-                html = self.get_page(search_url, use_selenium=True, wait_time=2)
-                if not html:
-                    self.logger.error("Failed to fetch search page")
-                    return product_urls
-                
-            except Exception as e:
-                self.logger.error(f"Error loading search page: {str(e)}")
-                return product_urls
-            finally:
-                # Restore original timeout
+            # Base URL pattern
+            base_search_url = "https://parts.audiusa.com/productSearch.aspx?ukey_make=5792&modelYear={year}&ukey_model=0&ukey_trimLevel=0&ukey_driveline=0&ukey_Category=0&numResults=250&sortOrder=Relevance&ukey_tag=0&isOnSale=0&isAccessory=0&isPerformance=0&showAllModels=1&searchTerm=wheel"
+            
+            # Process each year
+            for idx, year in enumerate(years, 1):
                 try:
-                    self.page_load_timeout = original_timeout
-                    self.driver.set_page_load_timeout(original_timeout)
-                except:
-                    pass
-            
-            # Wait for search results to load
-            try:
-                WebDriverWait(self.driver, 15).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/p/Audi__/']"))
-                )
-            except:
-                self.logger.warning("Product links not found immediately, continuing anyway...")
-            
-            # Scroll to load lazy-loaded content (in case there's infinite scroll)
-            self._scroll_to_load_content()
-            
-            # Get updated HTML after scrolling
-            if not self.driver:
-                self.logger.error("Driver not initialized")
-                return product_urls
-            html = self.driver.page_source
-            soup = BeautifulSoup(html, 'lxml')
-            
-            # Find product links - pattern: /p/Audi__/Product-Name/ID/PartNumber.html
-            product_links = soup.find_all('a', href=re.compile(r'/p/Audi__/'))
-            
-            for link in product_links:
-                href = link.get('href', '')
-                if href:
-                    full_url = href if href.startswith('http') else f"{self.base_url}{href}"
-                    # Remove query params and fragments
-                    if '?' in full_url:
-                        full_url = full_url.split('?')[0]
-                    if '#' in full_url:
-                        full_url = full_url.split('#')[0]
-                    full_url = full_url.rstrip('/')
+                    search_url = base_search_url.format(year=year)
+                    self.logger.info(f"[{idx}/{total_years}] Loading search page for year {year}: {search_url}")
                     
-                    if full_url not in product_urls:
-                        product_urls.append(full_url)
+                    # Increase page load timeout for search page (to allow Cloudflare to complete)
+                    original_timeout = self.page_load_timeout
+                    try:
+                        self.page_load_timeout = 60  # Increase to 60 seconds for search page
+                        self.driver.set_page_load_timeout(60)
+                        
+                        html = self.get_page(search_url, use_selenium=True, wait_time=2)
+                        if not html:
+                            self.logger.warning(f"Failed to fetch search page for year {year}")
+                            continue
+                        
+                    except Exception as e:
+                        self.logger.warning(f"Error loading search page for year {year}: {str(e)}")
+                        continue
+                    finally:
+                        # Restore original timeout
+                        try:
+                            self.page_load_timeout = original_timeout
+                            self.driver.set_page_load_timeout(original_timeout)
+                        except:
+                            pass
+                    
+                    # Wait for search results to load
+                    try:
+                        WebDriverWait(self.driver, 15).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/p/Audi__/']"))
+                        )
+                    except:
+                        self.logger.warning(f"Product links not found immediately for year {year}, continuing anyway...")
+                    
+                    # Scroll to load lazy-loaded content (in case there's infinite scroll)
+                    self._scroll_to_load_content()
+                    
+                    # Get updated HTML after scrolling
+                    if not self.driver:
+                        self.logger.error("Driver not initialized")
+                        continue
+                    html = self.driver.page_source
+                    soup = BeautifulSoup(html, 'lxml')
+                    
+                    # Find product links - pattern: /p/Audi__/Product-Name/ID/PartNumber.html
+                    product_links = soup.find_all('a', href=re.compile(r'/p/Audi__/'))
+                    
+                    year_urls = []
+                    for link in product_links:
+                        href = link.get('href', '')
+                        if href:
+                            full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                            # Remove query params and fragments
+                            if '?' in full_url:
+                                full_url = full_url.split('?')[0]
+                            if '#' in full_url:
+                                full_url = full_url.split('#')[0]
+                            full_url = full_url.rstrip('/')
+                            
+                            if full_url not in product_urls:
+                                product_urls.append(full_url)
+                                year_urls.append(full_url)
+                    
+                    self.logger.info(f"Year {year}: Found {len(product_links)} product links, {len(year_urls)} new unique URLs (Total so far: {len(product_urls)})")
+                    
+                    # Small delay between requests to avoid overwhelming the server
+                    time.sleep(random.uniform(1, 2))
+                    
+                except Exception as e:
+                    self.logger.error(f"Error processing year {year}: {str(e)}")
+                    import traceback
+                    self.logger.debug(f"Traceback: {traceback.format_exc()}")
+                    continue
             
-            self.logger.info(f"Found {len(product_links)} product links on search page, {len(product_urls)} unique URLs")
-            
-            # No pagination - all results are on a single page
+            self.logger.info(f"Completed search across all years. Total unique product URLs found: {len(product_urls)}")
             
         except Exception as e:
             self.logger.error(f"Error searching for wheels: {str(e)}")

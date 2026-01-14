@@ -1924,6 +1924,31 @@ class BaseScraper(ABC):
     
     # Keywords to EXCLUDE (not wheels) - Be very specific to avoid false positives
     EXCLUDE_KEYWORDS = [
+            # Wheel accessories and cleaners
+            'wheel cleaner',
+            'wheel cleaners',
+            'cleaner',
+            'cleaners',
+            'wheel polish',
+            'wheel polisher',
+            'polish',
+            'polisher',
+            'wheel bag',
+            'wheel bags',
+            'bag',
+            'bags',
+            # Wheel locks and security
+            'wheel lock',
+            'wheel lock nut',
+            'wheel lock key', 
+            'wheel locking',
+            'locking wheel',
+            'locking wheel nut',
+            'wheel lock set',
+            'wheel lock kit',
+            'lock',
+            'locks',
+            # Steering and other wheel parts
             'steering wheel',
             'Wheel Flange',
             'Wheel Flare',
@@ -1934,8 +1959,8 @@ class BaseScraper(ABC):
             'hub bearing',
             'wheel hub',
             'wheel hub bearing',
-            'hub bearing assembly',  # ← Changed from just 'hub assembly'
-            'bearing assembly',      # ← More specific
+            'hub bearing assembly',
+            'bearing assembly',
             'wheel nut', 
             'wheel stud', 
             'wheel bolt', 
@@ -1951,20 +1976,60 @@ class BaseScraper(ABC):
             'lug bolt',
             'tire pressure', 
             'tpms',
-            'wheel lock',
-            'wheel lock nut',
-            'wheel lock key', 
-            'wheel locking',
-            'locking wheel',
-            'locking wheel nut',
-            'wheel lock set',
-            'wheel lock kit',
             'wheel alignment',
             'wheel opening', 
             'wheel house', 
             'wheel liner', 
             'wheel adapter',
-            'wheel mounting kit'
+            'wheel mounting kit',
+            # Spare wheel carriers and related parts (not wheels themselves)
+            'spare wheel carrier',
+            'spare wheel carrier assembly',
+            'spare wheel cushion',
+            'wheel carrier',
+            'wheel cushion',
+            'carrier assembly',
+            'carrier bracket',
+            'carrier crossmember',
+            'carrier extension',
+            'carrier lid',
+            'carrier lock',
+            'carrier spacer',
+            'carrier stopper',
+            'carrier base',
+            'carrier holder',
+            'carrier protector',
+            'carrier set',
+            # Installation and service kits
+            'wheel installation kit',
+            'installation kit',
+            'wheel cup kit',
+            'wheel cylinder cup kit',
+            'wheel trim kit',
+            'service kit',
+            # Wheel lock accessories
+            'wheel lock pouch',
+            'alloy wheel locks',
+            'wheel locks',
+            # TPMS and tire-related
+            'tpms ecu',
+            'tpms ecu wheels',
+            # Tires and other non-wheel items
+            'tire',
+            'tires',
+            'tyre',
+            'tyres',
+            'sparetire',
+            'spare tire',
+            'spare tyre',
+            # General accessories
+            'accessory',
+            'accessories',
+            'kit',
+            'kits',
+            # Wheel covers (different from wheel caps - these are full covers)
+            'wheel cover set',
+            'wheel cover kit'
     ]
     
     def is_wheel_product(self, title, description=''):
@@ -1984,8 +2049,12 @@ class BaseScraper(ABC):
         
         text = f"{title} {description}".lower()
         
-        # Normalize hyphens and underscores to spaces for better matching
-        text = re.sub(r'[-_]', ' ', text)
+        # Normalize hyphens, underscores, and commas to spaces for better matching
+        # This handles cases like "Bracket, Spare Wheel Carrier" -> "Bracket Spare Wheel Carrier"
+        text = re.sub(r'[-_,]', ' ', text)
+        
+        # Normalize multiple spaces to single space
+        text = re.sub(r'\s+', ' ', text).strip()
         
         # Add space before "wheel" when it's attached to alphanumeric characters
         # This handles cases like "529102T550Wheel" -> "529102t550 wheel"
@@ -1993,12 +2062,6 @@ class BaseScraper(ABC):
         
         # Also add space after "wheel" when followed by uppercase letters (for "WheelAssembly" -> "wheel assembly")
         text = re.sub(r'(wheel)([a-z])', r'\1 \2', text, flags=re.IGNORECASE)
-
-        # DEBUG INFO
-        self.logger.info(f"🔍 DEBUG: title='{title}'")
-        self.logger.info(f"🔍 DEBUG: lowercased='{text}'")
-        self.logger.info(f"🔍 DEBUG: 'wheel cap' in text? {('wheel cap' in text)}")
-        self.logger.info(f"🔍 DEBUG: 'hub cap' in text? {('hub cap' in text)}")
 
         # DEBUG: Print what we're checking
         self.logger.info(f"🔍 Analyzing: '{title}'")
@@ -2014,66 +2077,118 @@ class BaseScraper(ABC):
         longest_wheel_length = 0
         longest_exclude_length = 0
         
-        # Check all wheel keywords and find the longest match
+        # PRIORITY 1: Check exclusions FIRST (especially important for products with "wheel" + excluded term)
+        # This ensures products like "Wheel Cleaner", "Wheel Bag", "Wheel Lock" are excluded
+        for exclude in sorted_exclude_keywords:
+            exclude_lower = exclude.lower()
+            matched = False
+            
+            if len(exclude.split()) == 1:
+                # Single word: match as whole word using word boundaries
+                pattern = r'\b' + re.escape(exclude_lower) + r'\b'
+                if re.search(pattern, text):
+                    # For ambiguous single words that could appear in descriptions,
+                    # only exclude if they appear in exclusion context (near "wheel") or as main product
+                    ambiguous_words = {
+                        'cleaner', 'cleaners', 'bag', 'bags', 'lock', 'locks', 
+                        'kit', 'kits', 'polish', 'polisher',
+                        'carrier', 'cushion', 'bracket', 'crossmember', 'extension',
+                        'lid', 'spacer', 'stopper', 'base', 'holder', 'protector',
+                        'set', 'pouch'
+                    }
+                    
+                    if exclude_lower in ambiguous_words:
+                        # Check if it appears in a multi-word exclusion context
+                        # e.g., "wheel cleaner", "wheel bag", "wheel lock", "spare wheel carrier", "wheel carrier"
+                        context_patterns = [
+                            r'\bwheel\s+' + re.escape(exclude_lower) + r'\b',
+                            r'\b' + re.escape(exclude_lower) + r'\s+wheel\b',
+                            r'\bspare\s+wheel\s+' + re.escape(exclude_lower) + r'\b',
+                            r'\b' + re.escape(exclude_lower) + r'\s+spare\s+wheel\b',
+                            r'\b' + re.escape(exclude_lower) + r'\s+(kit|set|bag|pack|bracket|crossmember|extension|lid|spacer|stopper|base|holder|protector)\b',
+                            r'\b(kit|set|bag|pack|bracket|crossmember|extension|lid|spacer|stopper|base|holder|protector)\s+' + re.escape(exclude_lower) + r'\b'
+                        ]
+                        if any(re.search(p, text, re.IGNORECASE) for p in context_patterns):
+                            matched = True
+                        # Also match if it's the main product (title starts with it or it's in first few words)
+                        # For words like "carrier", "cushion", "bracket", etc., if they appear early in title, exclude
+                        elif (text.startswith(exclude_lower + ' ') or 
+                              text.startswith(exclude_lower + '-') or
+                              re.match(r'^[^a-z]*' + re.escape(exclude_lower) + r'\b', text)):
+                            matched = True
+                        # Special case: For carrier/cushion/bracket/etc. in first 3 words (e.g., "Bracket, Spare Wheel Carrier")
+                        elif exclude_lower in {'carrier', 'cushion', 'bracket', 'crossmember', 'extension', 
+                                                'lid', 'spacer', 'stopper', 'base', 'holder', 'protector', 
+                                                'set', 'pouch'}:
+                            first_words = ' '.join(text.split()[:3])
+                            if exclude_lower in first_words:
+                                matched = True
+                    else:
+                        # Non-ambiguous exclusions (like "tire", "bearing", "sensor", "accessory") - always match
+                        matched = True
+            
+            else:
+                # Multi-word: match the phrase with word boundaries at start and end
+                # Replace spaces with \s+ to allow flexible spacing
+                escaped_phrase = re.escape(exclude_lower)
+                escaped_phrase = escaped_phrase.replace(r'\ ', r'\s+')
+                pattern = r'\b' + escaped_phrase + r'\b'
+                if re.search(pattern, text):
+                    matched = True
+            
+            if matched and len(exclude) > longest_exclude_length:
+                longest_exclude_match = exclude
+                longest_exclude_length = len(exclude)
+        
+        # PRIORITY 2: Check wheel keywords (only if no strong exclusion found)
+        # Special case: If we found an exclusion that contains "wheel" (like "wheel cleaner"),
+        # we should exclude immediately unless there's a more specific wheel keyword
         for keyword in sorted_wheel_keywords:
             keyword_lower = keyword.lower()
             matched = False
+            
             if len(keyword.split()) == 1:
                 # Single word: match as whole word using word boundaries
                 pattern = r'\b' + re.escape(keyword_lower) + r'\b'
                 if re.search(pattern, text):
                     matched = True
             else:
-                # Multi-word: use substring match
-                if keyword_lower in text:
+                # Multi-word: use substring match with word boundaries
+                escaped_phrase = re.escape(keyword_lower)
+                escaped_phrase = escaped_phrase.replace(r'\ ', r'\s+')
+                pattern = r'\b' + escaped_phrase + r'\b'
+                if re.search(pattern, text):
                     matched = True
             
             if matched and len(keyword) > longest_wheel_length:
                 longest_wheel_match = keyword
                 longest_wheel_length = len(keyword)
         
-        # Check all exclude keywords and find the longest match
-        for exclude in sorted_exclude_keywords:
-            exclude_lower = exclude.lower()
-            # Use word boundary matching for better accuracy
-            if len(exclude.split()) == 1:
-                # Single word: match as whole word using word boundaries
-                pattern = r'\b' + re.escape(exclude_lower) + r'\b'
-                if re.search(pattern, text):
-                    if len(exclude) > longest_exclude_length:
-                        longest_exclude_match = exclude
-                        longest_exclude_length = len(exclude)
+        # Decision logic: Prioritize exclusions, especially if they contain "wheel"
+        if longest_exclude_length > 0:
+            # Check if the exclusion contains "wheel" - if so, it's definitely not a wheel product
+            exclude_has_wheel = 'wheel' in longest_exclude_match.lower()
+            
+            if longest_wheel_length > 0:
+                # Both matched - check if exclusion is more specific
+                # If exclusion contains "wheel", it always wins (e.g., "wheel cleaner" beats "wheel")
+                if exclude_has_wheel or longest_exclude_length >= longest_wheel_length:
+                    self.logger.info(f"❌ EXCLUDED '{title[:50]}' - matched '{longest_exclude_match}' (overrides '{longest_wheel_match}')")
+                    return False
+                else:
+                    # Wheel keyword is more specific (e.g., "alloy wheel" vs "cleaner")
+                    self.logger.info(f"✅ INCLUDED '{title[:50]}' - matched '{longest_wheel_match}' (overrides '{longest_exclude_match}')")
+                    return True
             else:
-                # Multi-word: match the phrase with word boundaries at start and end
-                # Escape the phrase and add word boundaries
-                escaped_phrase = re.escape(exclude_lower)
-                # Replace escaped spaces with \s+ to allow flexible spacing
-                escaped_phrase = escaped_phrase.replace(r'\ ', r'\s+')
-                pattern = r'\b' + escaped_phrase + r'\b'
-                if re.search(pattern, text):
-                    if len(exclude) > longest_exclude_length:
-                        longest_exclude_match = exclude
-                        longest_exclude_length = len(exclude)
-        
-        # If both match, the longer/more specific one wins
-        # If only one matches, use that result
-        if longest_wheel_length > 0 and longest_exclude_length > 0:
-            # Both matched - longer one wins
-            if longest_wheel_length >= longest_exclude_length:
-                self.logger.info(f"✅ INCLUDED '{title[:50]}' - matched '{longest_wheel_match}' (overrides '{longest_exclude_match}')")
-                return True
-            else:
-                self.logger.info(f"❌ EXCLUDED '{title[:50]}' - matched '{longest_exclude_match}' (overrides '{longest_wheel_match}')")
+                # Only exclusion matched
+                self.logger.info(f"❌ EXCLUDED '{title[:50]}' - matched '{longest_exclude_match}'")
                 return False
         elif longest_wheel_length > 0:
             # Only wheel keyword matched
             self.logger.info(f"✅ INCLUDED '{title[:50]}' - matched '{longest_wheel_match}'")
             return True
-        elif longest_exclude_length > 0:
-            # Only exclude keyword matched
-            self.logger.info(f"❌ EXCLUDED '{title[:50]}' - matched '{longest_exclude_match}'")
-            return False
         
+        # No matches found
         self.logger.info(f"⚠️ NO MATCH '{title[:50]}' - no wheel keywords found")
         return False
     
