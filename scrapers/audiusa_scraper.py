@@ -67,7 +67,8 @@ class AudiUSAScraper(BaseScraperWithExtension):
                 
                 # Check if it's an individual product page
                 product_patterns = [
-                    r'/p/Audi__/[^/]+/\d+/[^/]+\.html',  # /p/Audi__/Product-Name/ID/PartNumber.html
+                    r'/p/Audi_\d+_/[^/]+/\d+/[^/]+\.html',  # /p/Audi_[YEAR]_/Product-Name/ID/PartNumber.html
+                    r'/p/Audi__/[^/]+/\d+/[^/]+\.html',  # /p/Audi__/Product-Name/ID/PartNumber.html (fallback pattern)
                 ]
                 
                 for pattern in product_patterns:
@@ -150,7 +151,7 @@ class AudiUSAScraper(BaseScraperWithExtension):
                     # Wait for search results to load
                     try:
                         WebDriverWait(self.driver, 15).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/p/Audi__/']"))
+                            EC.presence_of_element_located((By.CSS_SELECTOR, "div.col-md-4.text-right.productSearch_viewProductBtn"))
                         )
                     except:
                         self.logger.warning(f"Product links not found immediately for year {year}, continuing anyway...")
@@ -165,26 +166,30 @@ class AudiUSAScraper(BaseScraperWithExtension):
                     html = self.driver.page_source
                     soup = BeautifulSoup(html, 'lxml')
                     
-                    # Find product links - pattern: /p/Audi__/Product-Name/ID/PartNumber.html
-                    product_links = soup.find_all('a', href=re.compile(r'/p/Audi__/'))
+                    # Find product links using the specific div structure
+                    # Look for <div class="col-md-4 text-right productSearch_viewProductBtn"> elements
+                    product_containers = soup.find_all('div', class_='col-md-4 text-right productSearch_viewProductBtn')
                     
                     year_urls = []
-                    for link in product_links:
-                        href = link.get('href', '')
-                        if href:
-                            full_url = href if href.startswith('http') else f"{self.base_url}{href}"
-                            # Remove query params and fragments
-                            if '?' in full_url:
-                                full_url = full_url.split('?')[0]
-                            if '#' in full_url:
-                                full_url = full_url.split('#')[0]
-                            full_url = full_url.rstrip('/')
-                            
-                            if full_url not in product_urls:
-                                product_urls.append(full_url)
-                                year_urls.append(full_url)
+                    for container in product_containers:
+                        # Find <a> tag within the container
+                        link = container.find('a')
+                        if link:
+                            href = link.get('href', '')
+                            if href:
+                                full_url = href if href.startswith('http') else f"{self.base_url}{href}"
+                                # Remove query params and fragments
+                                if '?' in full_url:
+                                    full_url = full_url.split('?')[0]
+                                if '#' in full_url:
+                                    full_url = full_url.split('#')[0]
+                                full_url = full_url.rstrip('/')
+                                
+                                if full_url not in product_urls:
+                                    product_urls.append(full_url)
+                                    year_urls.append(full_url)
                     
-                    self.logger.info(f"Year {year}: Found {len(product_links)} product links, {len(year_urls)} new unique URLs (Total so far: {len(product_urls)})")
+                    self.logger.info(f"Year {year}: Found {len(product_containers)} product containers, {len(year_urls)} new unique URLs (Total so far: {len(product_urls)})")
                     
                     # Small delay between requests to avoid overwhelming the server
                     time.sleep(random.uniform(1, 2))
